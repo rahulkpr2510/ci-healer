@@ -1,0 +1,130 @@
+/* frontend/src/app/globals.css */
+@import "tailwindcss";
+
+/* ── Design Tokens ─────────────────────────────────────────
+   Monochromatic palette: white / zinc / black.
+   No blue. Status colours (emerald/red/amber) are semantic only.
+──────────────────────────────────────────────────────────── */
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.7% 44%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 5.9% 10%;
+    --radius: 0.625rem;
+    --sidebar: 240 4.8% 97%;
+    --sidebar-border: 240 5.9% 90%;
+  }
+
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 7%;
+    --card-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+    --sidebar: 240 10% 5.5%;
+    --sidebar-border: 240 3.7% 12%;
+  }
+}
+
+/* ── Base Resets ─────────────────────────────────────────── */
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* ── Background patterns ─────────────────────────────────── */
+.dot-grid {
+  background-image: radial-gradient(
+    hsl(240 5% 65% / 0.18) 1px,
+    transparent 1px
+  );
+  background-size: 28px 28px;
+}
+.dark .dot-grid {
+  background-image: radial-gradient(
+    hsl(240 5% 30% / 0.35) 1px,
+    transparent 1px
+  );
+}
+
+.line-grid {
+  background-image:
+    linear-gradient(hsl(240 5% 90% / 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(240 5% 90% / 0.5) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+.dark .line-grid {
+  background-image:
+    linear-gradient(hsl(240 5% 20% / 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(240 5% 20% / 0.5) 1px, transparent 1px);
+}
+
+/* ── Scrollbar ────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* ── Log terminal font ────────────────────────────────────── */
+.log-line {
+  font-family: ui-monospace, "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.75rem;
+  line-height: 1.65;
+}
+
+/* ── Skeleton shimmer ─────────────────────────────────────── */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--border)) 50%,
+    hsl(var(--muted)) 75%
+  );
+  background-size: 200% auto;
+  animation: shimmer 1.5s linear infinite;
+}
+
+/* ── Focus ring ───────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
