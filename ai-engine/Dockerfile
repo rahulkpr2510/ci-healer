@@ -38,11 +38,15 @@ COPY --from=builder /install /usr/local
 # Copy source
 COPY . .
 
-# Create workspace directory for cloned repos
-RUN mkdir -p /app/workspace
+# Create workspace directories for cloned repos.
+# Both paths are created so the default (/app/workspace) and any
+# WORKSPACE_DIR=/workspace override in Render env vars both work.
+RUN mkdir -p /app/workspace /workspace
 
 # Non-root user
-RUN useradd -m appuser && chown -R appuser:appuser /app
+RUN useradd -m appuser \
+    && chown -R appuser:appuser /app \
+    && chown -R appuser:appuser /workspace
 USER appuser
 
 # Expose engine port
