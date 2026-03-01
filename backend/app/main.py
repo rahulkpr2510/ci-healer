@@ -1,11 +1,13 @@
 # backend/app/main.py
 
+import asyncio
 import logging
 import sys
 import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -101,12 +103,33 @@ async def lifespan(app: FastAPI):
         await init_db()
         logger.info("Database ready (dev auto-create)")
 
+    # ── Wake AI engine in parallel ──────────────────────
+    # On Render free tier both services spin down. Pinging the engine here
+    # means it starts warming up at the same time as the backend, cutting
+    # the delay users experience on the first real request.
+    asyncio.ensure_future(_wake_ai_engine())
+
     logger.info("Backend startup complete")
     yield
 
     # ── Shutdown ──────────────────────────────────────────
     await close_db()
     logger.info("Backend shutdown complete")
+
+
+# ── AI engine wake-up helper ─────────────────────────────
+
+async def _wake_ai_engine() -> None:
+    """Fire-and-forget ping to the AI engine /health endpoint.
+    Keeps both Render services warm in sync; does not block startup."""
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(f"{settings.AI_ENGINE_URL}/health")
+            logger.info("AI engine wake-up ping: %s", resp.status_code)
+    except Exception as exc:
+        # Non-fatal — engine may just be cold-starting; it will be ready by
+        # the time a real /engine/run request arrives.
+        logger.warning("AI engine wake-up ping failed (will retry on first use): %s", exc)
 
 
 # ── App factory ───────────────────────────────────────────
@@ -165,6 +188,29 @@ def health():
         "status": "ok",
         "app": settings.APP_NAME,
         "env": settings.APP_ENV,
+        "ai_engine_url": settings.AI_ENGINE_URL,
+    }
+
+
+@app.get("/warmup")
+async def warmup():
+    """Ping both the backend and AI engine simultaneously.
+    Call this from the frontend on app load to wake both Render services
+    before the user triggers a real run.
+    """
+    async def _ping_engine():
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(f"{settings.AI_ENGINE_URL}/health")
+                return {"status": "ok", "code": r.status_code}
+        except Exception as exc:
+            return {"status": "unreachable", "error": str(exc)}
+
+    engine_status = await _ping_engine()
+
+    return {
+        "backend": {"status": "ok"},
+        "ai_engine": engine_status,
         "ai_engine_url": settings.AI_ENGINE_URL,
     }
 
