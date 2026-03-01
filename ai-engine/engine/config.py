@@ -46,7 +46,9 @@ class EngineSettings(BaseSettings):
     GIT_COMMIT_PREFIX: str = "[AI-AGENT]"
 
     # ── Workspace ─────────────────────────────────────────
-    WORKSPACE_DIR: str = "/workspace"
+    # Must match the directory created + chowned in the Dockerfile.
+    # Dockerfile does: RUN mkdir -p /app/workspace && chown -R appuser:appuser /app
+    WORKSPACE_DIR: str = "/app/workspace"
 
     # ── Internal API ──────────────────────────────────────
     ENGINE_HOST: str = "0.0.0.0"
