@@ -1,5 +1,3 @@
-// frontend/src/types/agent.ts
-
 export type RunStatus = "RUNNING" | "PASSED" | "FAILED";
 
 export type BugType =
