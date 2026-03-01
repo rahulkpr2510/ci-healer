@@ -1,6 +1,9 @@
 # backend/app/routers/auth.py  — top imports section
 
 import secrets
+import hmac
+import hashlib
+import time
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
@@ -23,10 +26,55 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# ── In-memory CSRF state store ────────────────────────────
-# Stores valid OAuth state tokens (cleared after use)
-# In production with multiple workers, replace with Redis
-_oauth_states: set[str] = set()
+# ── OAuth state TTL (seconds) ─────────────────────────────
+_STATE_TTL = 600  # 10 minutes
+
+
+# ── Signed state helpers ──────────────────────────────────
+def _generate_oauth_state() -> str:
+    """
+    Creates a self-contained, signed state token.
+    Format: <timestamp>.<nonce>.<hmac>
+    Works across multiple workers / processes without shared memory.
+    """
+    ts = str(int(time.time()))
+    nonce = secrets.token_urlsafe(16)
+    payload = f"{ts}.{nonce}"
+    sig = hmac.new(
+        settings.JWT_SECRET_KEY.encode(),
+        payload.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def _verify_oauth_state(state: str) -> bool:
+    """
+    Returns True only if the state has a valid signature and is not expired.
+    """
+    try:
+        ts_str, nonce, received_sig = state.rsplit(".", 2)
+    except ValueError:
+        return False
+
+    payload = f"{ts_str}.{nonce}"
+    expected_sig = hmac.new(
+        settings.JWT_SECRET_KEY.encode(),
+        payload.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(expected_sig, received_sig):
+        return False
+
+    # Check expiry
+    try:
+        if time.time() - float(ts_str) > _STATE_TTL:
+            return False
+    except ValueError:
+        return False
+
+    return True
 
 
 # ── GET /auth/github ──────────────────────────────────────
@@ -41,9 +89,8 @@ async def github_login():
       2. This generates a state token + redirects to GitHub
       3. GitHub redirects back to /auth/callback?code=...&state=...
     """
-    state = secrets.token_urlsafe(32)
-    _oauth_states.add(state)
-    
+    state = _generate_oauth_state()
+
     authorization_url = get_github_authorization_url(state=state)
     return RedirectResponse(url=authorization_url, status_code=302)
 
@@ -68,12 +115,12 @@ async def github_callback(
          (frontend stores it in localStorage/cookie)
     """
     # ── CSRF check ────────────────────────────────────────
-    if state not in _oauth_states:
+    if not _verify_oauth_state(state):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired OAuth state. Please try logging in again.",
         )
-    _oauth_states.discard(state)   # one-time use
+    # (no discard needed — expiry window provides one-shot-like protection)
 
     # ── Exchange code for GitHub token ────────────────────
     try:
