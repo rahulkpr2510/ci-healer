@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+
+# Env files — NEVER commit these
+.env
+.env.local
+.env.production
+.env.development
+
+# Runtime
+backend/workspace/
+ai-engine/workspace/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+.github
+

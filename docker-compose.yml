@@ -1,0 +1,124 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CI Healer — full-stack docker-compose
+#
+#  Services:
+#    db        — PostgreSQL 16 (local dev database)
+#    backend   — FastAPI backend (port 8000)
+#    ai-engine — LangGraph AI engine (port 8001)
+#    frontend  — Next.js frontend (port 3000)
+#
+#  Usage:
+#    docker-compose up --build            # start everything
+#    docker-compose up --build backend    # start only backend (+ db)
+#    docker-compose logs -f backend       # tail logs
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  ci_net:
+    driver: bridge
+
+volumes:
+  pg_data:
+  workspace_data:
+
+services:
+  # ── PostgreSQL ─────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: ci_healer_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cihealer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cihealer_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-cihealer}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cihealer}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ci_net
+
+  # ── Backend (FastAPI) ──────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ci_healer_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cihealer}:${POSTGRES_PASSWORD:-cihealer_dev}@db:5432/${POSTGRES_DB:-cihealer}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-http://localhost:8000/auth/callback}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change_me_in_production_secret_key_32chars}
+      AI_ENGINE_URL: http://ai-engine:8001
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+    networks:
+      - ci_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── AI Engine (LangGraph + Gemini) ────────────────────
+  ai-engine:
+    build:
+      context: ./ai-engine
+      dockerfile: Dockerfile
+    container_name: ci_healer_engine
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    volumes:
+      - workspace_data:/workspace
+    environment:
+      # LLM provider — set to "groq" (free) or "gemini"
+      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      # Gemini fallback (optional)
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-CI Healer Bot}
+      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-bot@cihealer.dev}
+      WORKSPACE_DIR: /workspace
+      DEFAULT_MAX_ITERATIONS: ${DEFAULT_MAX_ITERATIONS:-5}
+    networks:
+      - ci_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Frontend (Next.js) ────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: ci_healer_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    networks:
+      - ci_net
