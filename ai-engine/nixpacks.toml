@@ -1,0 +1,14 @@
+# ai-engine/nixpacks.toml
+# Used by Railway when not using Dockerfile builder (nixpacks auto-detection)
+
+[phases.setup]
+nixPkgs = ["python312", "git"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = "uvicorn api.main:app --host 0.0.0.0 --port $PORT --workers 1"
