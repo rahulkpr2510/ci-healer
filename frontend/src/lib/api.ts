@@ -67,6 +67,19 @@ export function getGithubLoginUrl(): string {
   return `${BASE_URL}/auth/github`;
 }
 
+/**
+ * Pings the backend /warmup endpoint which simultaneously wakes the AI engine.
+ * Call once on app load so both Render services are warm before the user
+ * triggers a real run.
+ */
+export async function startupWarmup(): Promise<void> {
+  try {
+    await fetch(`${BASE_URL}/warmup`, { method: "GET" });
+  } catch {
+    // Non-fatal — services will wake up on first real request anyway
+  }
+}
+
 export async function getMe(): Promise<User> {
   return apiFetch<User>("/auth/me");
 }
