@@ -3,6 +3,7 @@
 import httpx
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -26,13 +27,13 @@ def get_github_authorization_url(state: str) -> str:
       - user:email → email address
       - repo       → read/write repos for agent operations
     """
-    params = (
-        f"?client_id={settings.GITHUB_CLIENT_ID}"
-        f"&redirect_uri={settings.GITHUB_REDIRECT_URI}"
-        f"&scope=read:user+user:email+repo"
-        f"&state={state}"
-    )
-    return f"{GITHUB_OAUTH_URL}{params}"
+    params = urlencode({
+        "client_id": settings.GITHUB_CLIENT_ID,
+        "redirect_uri": settings.GITHUB_REDIRECT_URI,
+        "scope": "read:user user:email repo",
+        "state": state,
+    })
+    return f"{GITHUB_OAUTH_URL}?{params}"
 
 
 # ── Step 2: Exchange code → access token ─────────────────
@@ -61,8 +62,13 @@ async def exchange_code_for_token(code: str) -> str:
     data = response.json()
 
     if "error" in data:
-        logger.error("GitHub OAuth error: %s — %s", data.get("error"), data.get("error_description"))
-        raise ValueError(data.get("error_description", "GitHub OAuth failed"))
+        error_code = data.get("error")
+        error_desc = data.get("error_description", "GitHub OAuth failed")
+        logger.error(
+            "GitHub OAuth error — code: %s | description: %s | redirect_uri used: %s",
+            error_code, error_desc, settings.GITHUB_REDIRECT_URI,
+        )
+        raise ValueError(f"[{error_code}] {error_desc}")
 
     access_token = data.get("access_token")
     if not access_token:
