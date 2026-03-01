@@ -4,6 +4,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import AuthGuard from "@/components/auth/AuthGuard";
+import WarmupPinger from "@/components/WarmupPinger";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
@@ -63,7 +64,10 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} dark`}>
       <body className="font-[var(--font-inter)] antialiased">
-        <AuthGuard>{children}</AuthGuard>
+        <AuthGuard>
+          <WarmupPinger />
+          {children}
+        </AuthGuard>
       </body>
     </html>
   );
