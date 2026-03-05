@@ -47,42 +47,54 @@ def fix_generator(state: AgentState) -> dict:
     Node 6: Generate fixes for all classified failures using the configured LLM.
 
     Optimizations:
-    - Early stopping: Skip if tests already pass
+    - Uses current_iteration_failures so we only fix issues found THIS iteration
+    - Early stopping: Skip if tests already pass AND there are no static failures
     - Batching: Group multiple errors in same file into one LLM call
     - Caching: Skip LLM call if same error was fixed before
+    - Full language support: works on any language the LLM understands
     """
     emit(state, "node_start", "fix", iteration=state["current_iteration"])
 
-    # ── Early stopping: tests already pass ────────────────
-    if state.get("test_passed", False):
-        logger.info("Tests already passing — skipping fix generation")
-        emit(state, "node_end", "fix", fixes_count=0, skipped="tests_passed")
-        return {"fixes": []}
+    # ── Use per-iteration failures to avoid re-fixing already-fixed issues ──
+    failures: list[Failure] = (
+        state.get("current_iteration_failures")
+        or state.get("failures", [])
+    )
 
-    failures: list[Failure] = state.get("failures", [])
+    # ── Early stopping: tests already pass AND no static failures ────────────
+    if state.get("test_passed", False) and not failures:
+        logger.info("Tests already passing and no static failures — skipping fix generation")
+        emit(state, "node_end", "fix", fixes_count=0, skipped="tests_passed")
+        return {"fixes": [], "current_iteration_fixes": []}
+
     repo_path = state["repo_local_path"]
+    primary_language = state.get("primary_language", "unknown")
     fixes: list[Fix] = []
 
     if not failures:
-        logger.info("No failures to fix")
+        logger.info("No failures to fix in this iteration")
         emit(state, "node_end", "fix", fixes_count=0, failures_count=0)
-        return {"fixes": fixes}
+        return {"fixes": fixes, "current_iteration_fixes": []}
 
     # ── Group failures by file for batching ───────────────
     failures_by_file: dict[str, list[Failure]] = defaultdict(list)
     for failure in failures:
         failures_by_file[failure.file].append(failure)
 
-    logger.info("Grouped %d failures into %d unique files", len(failures), len(failures_by_file))
+    logger.info(
+        "Iteration %d: fixing %d failures in %d files (language: %s)",
+        state.get("current_iteration", 1),
+        len(failures),
+        len(failures_by_file),
+        primary_language,
+    )
 
     for file_path, file_failures in failures_by_file.items():
         if len(file_failures) == 1:
-            # Single error - use regular fix generation
-            fix = _generate_fix_with_cache(file_failures[0], repo_path)
+            fix = _generate_fix_with_cache(file_failures[0], repo_path, primary_language)
             fixes.append(fix)
         else:
-            # Multiple errors - use batched fix generation
-            batch_fixes = _generate_batch_fix(file_failures, repo_path)
+            batch_fixes = _generate_batch_fix(file_failures, repo_path, primary_language)
             fixes.extend(batch_fixes)
 
         emit(state, "node_end", "fix",
@@ -90,8 +102,14 @@ def fix_generator(state: AgentState) -> dict:
              fixes_count=len(fixes),
              failures_count=len(failures))
 
-    logger.info("Generated %d fixes for %d failures", len(fixes), len(failures))
-    return {"fixes": fixes}
+    applied = len([f for f in fixes if f.status == FixStatus.FIXED])
+    failed  = len([f for f in fixes if f.status == FixStatus.FAILED])
+    skipped = len([f for f in fixes if f.status == FixStatus.SKIPPED])
+    logger.info(
+        "Fix generation done: applied=%d failed=%d skipped=%d",
+        applied, failed, skipped,
+    )
+    return {"fixes": fixes, "current_iteration_fixes": fixes}
 
 
 def _normalize_error(description: str) -> str:
@@ -99,7 +117,7 @@ def _normalize_error(description: str) -> str:
     return description.strip().lower()
 
 
-def _generate_fix_with_cache(failure: Failure, repo_path: str) -> Fix:
+def _generate_fix_with_cache(failure: Failure, repo_path: str, language: str = "") -> Fix:
     """Generate fix with caching to avoid redundant LLM calls."""
     cache_key = (failure.file, _normalize_error(failure.description))
     
@@ -108,10 +126,8 @@ def _generate_fix_with_cache(failure: Failure, repo_path: str) -> Fix:
         fixed_code = _FIX_CACHE[cache_key]
         return _apply_cached_fix(failure, repo_path, fixed_code)
     
-    # Cache miss - generate fix normally
-    fix = _generate_fix(failure, repo_path)
+    fix = _generate_fix(failure, repo_path, language)
     
-    # Store in cache if fix was successful
     if fix.status == FixStatus.FIXED and fix.after_snippet:
         _FIX_CACHE[cache_key] = fix.after_snippet
     
@@ -152,7 +168,7 @@ def _apply_cached_fix(failure: Failure, repo_path: str, fixed_code: str) -> Fix:
         )
 
 
-def _generate_batch_fix(failures: list[Failure], repo_path: str) -> list[Fix]:
+def _generate_batch_fix(failures: list[Failure], repo_path: str, language: str = "") -> list[Fix]:
     """Generate fixes for multiple errors in the same file with a single LLM call."""
     if not failures:
         return []
@@ -191,7 +207,7 @@ def _generate_batch_fix(failures: list[Failure], repo_path: str) -> list[Fix]:
         ]
     
     # Build batched prompt
-    prompt = _build_batch_prompt(failures, original_code)
+    prompt = _build_batch_prompt(failures, original_code, language)
     
     try:
         logger.info("Making batched LLM call for %d errors in %s", len(failures), file_path)
@@ -282,15 +298,16 @@ def _generate_batch_fix(failures: list[Failure], repo_path: str) -> list[Fix]:
         ]
 
 
-def _build_batch_prompt(failures: list[Failure], original_code: str) -> str:
+def _build_batch_prompt(failures: list[Failure], original_code: str, language: str = "") -> str:
     """Build a prompt for fixing multiple errors in one file."""
-    file_path = failures[0].file
+    file_path  = failures[0].file
+    lang_hint  = f" ({language}" + " source file)" if language else ""
     error_list = "\n".join([
         f"  {i+1}. Line {f.line}: {f.bug_type.value} - {f.description}"
         for i, f in enumerate(failures)
     ])
-    
-    return f"""Fix ALL of the following {len(failures)} errors in this file:
+
+    return f"""Fix ALL of the following {len(failures)} errors in this{lang_hint} file:
 
 File: {file_path}
 
@@ -300,9 +317,9 @@ Errors to fix:
 Current file content:
 {original_code}
 
-Return only the complete fixed file content with ALL errors fixed."""
+Return ONLY the complete fixed file content with ALL errors fixed. No explanations, no markdown fences."""
 
-def _generate_fix(failure: Failure, repo_path: str) -> Fix:
+def _generate_fix(failure: Failure, repo_path: str, language: str = "") -> Fix:
     abs_path = os.path.join(repo_path, failure.file)
 
     # ── guard: must be a file not a directory ─────────────
@@ -359,7 +376,7 @@ def _generate_fix(failure: Failure, repo_path: str) -> Fix:
             status=FixStatus.FAILED,
         )
 
-    prompt = _build_prompt(failure, original_code)
+    prompt = _build_prompt(failure, original_code, language)
 
     try:
         response = llm.invoke([
@@ -430,8 +447,9 @@ def _generate_fix(failure: Failure, repo_path: str) -> Fix:
         )
 
 
-def _build_prompt(failure: Failure, original_code: str) -> str:
-    return f"""Fix the following {failure.bug_type.value} error in this file:
+def _build_prompt(failure: Failure, original_code: str, language: str = "") -> str:
+    lang_hint = f" {language}" if language else ""
+    return f"""Fix the following {failure.bug_type.value} error in this{lang_hint} file:
 
 File: {failure.file}
 Line: {failure.line}
@@ -440,4 +458,4 @@ Error: {failure.description}
 Current file content:
 {original_code}
 
-Return only the complete fixed file content."""
+Return ONLY the complete fixed file content. No explanations, no markdown fences."""
