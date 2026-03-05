@@ -208,7 +208,9 @@ export default function AnalyticsPage() {
                         ? "#10b981"
                         : entry.status === "FAILED"
                           ? "#ef4444"
-                          : "#71717a"
+                          : entry.status === "NO_ISSUES"
+                            ? "#f59e0b"
+                            : "#71717a"
                     }
                   />
                 ))}
