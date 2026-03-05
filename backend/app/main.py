@@ -109,10 +109,20 @@ async def lifespan(app: FastAPI):
     # the delay users experience on the first real request.
     asyncio.ensure_future(_wake_ai_engine())
 
+    # ── Start persistent keep-alive loop ─────────────────
+    # Pings the AI engine every AI_ENGINE_KEEPALIVE_INTERVAL seconds so
+    # Render never idles it while the backend is running.
+    keepalive_task = asyncio.create_task(_ai_engine_keepalive_loop())
+
     logger.info("Backend startup complete")
     yield
 
     # ── Shutdown ──────────────────────────────────────────
+    keepalive_task.cancel()
+    try:
+        await keepalive_task
+    except asyncio.CancelledError:
+        pass
     await close_db()
     logger.info("Backend shutdown complete")
 
@@ -130,6 +140,29 @@ async def _wake_ai_engine() -> None:
         # Non-fatal — engine may just be cold-starting; it will be ready by
         # the time a real /engine/run request arrives.
         logger.warning("AI engine wake-up ping failed (will retry on first use): %s", exc)
+
+
+async def _ai_engine_keepalive_loop() -> None:
+    """Periodically ping the AI engine /health endpoint for the entire
+    lifetime of the backend process, preventing Render from idling it."""
+    interval = settings.AI_ENGINE_KEEPALIVE_INTERVAL
+    logger.info(
+        "AI engine keep-alive started (interval: %ds, target: %s)",
+        interval, settings.AI_ENGINE_URL,
+    )
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{settings.AI_ENGINE_URL}/health")
+                if resp.status_code == 200:
+                    logger.debug("AI engine keep-alive ping OK")
+                else:
+                    logger.warning(
+                        "AI engine keep-alive ping returned %s", resp.status_code
+                    )
+        except Exception as exc:
+            logger.warning("AI engine keep-alive ping failed: %s", exc)
 
 
 # ── App factory ───────────────────────────────────────────
