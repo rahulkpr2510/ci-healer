@@ -56,4 +56,4 @@ def patch_applier(state: AgentState) -> dict:
              },
              fixes_count=len([f for f in updated_fixes if f.status == FixStatus.FIXED]))
 
-    return {"fixes": updated_fixes}
+    return {"fixes": updated_fixes, "current_iteration_fixes": updated_fixes}
