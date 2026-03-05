@@ -23,8 +23,13 @@ logger = logging.getLogger(__name__)
 # ── Conditional edge functions ────────────────────────────
 
 def should_fix(state: AgentState) -> Literal["fix_generator", "finalize"]:
-    """After classification: fix if failures found, else finalize."""
-    failures = state.get("failures", [])
+    """
+    After classification: fix if THIS iteration found failures, else finalize.
+    Uses current_iteration_failures so we don't re-process already-fixed issues
+    from prior iterations.
+    """
+    # Use per-iteration failures when available, fall back to all failures
+    failures = state.get("current_iteration_failures") or state.get("failures", [])
     if failures:
         return "fix_generator"
     return "finalize"
@@ -32,22 +37,28 @@ def should_fix(state: AgentState) -> Literal["fix_generator", "finalize"]:
 
 def should_iterate(state: AgentState) -> Literal["static_analyzer", "finalize"]:
     """
-    After CI monitor: iterate again if failed and under limit,
-    else finalize.
+    After CI monitor: iterate again if still failing and under the limit.
+    Increments current_iteration and resets per-iteration state before looping.
     """
-    final_status = state.get("final_status")
-    current_iteration = state.get("current_iteration", 1)
-    max_iterations = state.get("max_iterations", 5)
+    final_status    = state.get("final_status")
+    current_iter    = state.get("current_iteration", 1)
+    max_iterations  = state.get("max_iterations", 5)
 
     if final_status == RunStatus.PASSED.value:
         logger.info("CI passed — finalizing")
         return "finalize"
 
-    if current_iteration >= max_iterations:
-        logger.info("Max iterations (%d) reached — finalizing", max_iterations)
+    if current_iter >= max_iterations:
+        logger.info(
+            "Max iterations (%d) reached — finalizing with status: %s",
+            max_iterations, final_status,
+        )
         return "finalize"
 
-    logger.info("CI failed — iterating (attempt %d/%d)", current_iteration, max_iterations)
+    logger.info(
+        "CI still failing — starting iteration %d/%d",
+        current_iter + 1, max_iterations,
+    )
     return "static_analyzer"
 
 
@@ -56,8 +67,13 @@ def should_commit(state: AgentState) -> Literal["git_commit", "finalize"]:
     from engine.state import FixStatus
     if state.get("read_only"):
         return "finalize"
-    fixes = [f for f in state.get("fixes", []) if f.status == FixStatus.FIXED]
-    if fixes:
+    # Use per-iteration fixes when available
+    fixes = (
+        state.get("current_iteration_fixes")
+        or [f for f in state.get("fixes", []) if f.status == FixStatus.FIXED]
+    )
+    applied = [f for f in fixes if f.status == FixStatus.FIXED]
+    if applied:
         return "git_commit"
     return "finalize"
 
@@ -68,26 +84,26 @@ def build_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
     # ── Register nodes ────────────────────────────────────
-    graph.add_node("repo_analyzer", repo_analyzer)
-    graph.add_node("language_detector", language_detector)
-    graph.add_node("static_analyzer", static_analyzer)
-    graph.add_node("test_runner", test_runner)
+    graph.add_node("repo_analyzer",      repo_analyzer)
+    graph.add_node("language_detector",  language_detector)
+    graph.add_node("static_analyzer",    static_analyzer)
+    graph.add_node("test_runner",        test_runner)
     graph.add_node("failure_classifier", failure_classifier)
-    graph.add_node("fix_generator", fix_generator)
-    graph.add_node("patch_applier", patch_applier)
-    graph.add_node("git_commit", git_commit)
+    graph.add_node("fix_generator",      fix_generator)
+    graph.add_node("patch_applier",      patch_applier)
+    graph.add_node("git_commit",         git_commit)
     graph.add_node("create_pull_request", create_pull_request)
-    graph.add_node("ci_monitor", ci_monitor)
-    graph.add_node("finalize", finalize)
+    graph.add_node("ci_monitor",         ci_monitor)
+    graph.add_node("finalize",           finalize)
 
     # ── Entry point ───────────────────────────────────────
     graph.set_entry_point("repo_analyzer")
 
     # ── Linear edges ─────────────────────────────────────
-    graph.add_edge("repo_analyzer", "language_detector")
-    graph.add_edge("language_detector", "static_analyzer")
-    graph.add_edge("static_analyzer", "test_runner")
-    graph.add_edge("test_runner", "failure_classifier")
+    graph.add_edge("repo_analyzer",      "language_detector")
+    graph.add_edge("language_detector",  "static_analyzer")
+    graph.add_edge("static_analyzer",    "test_runner")
+    graph.add_edge("test_runner",        "failure_classifier")
 
     # ── Conditional: fix or finalize ──────────────────────
     graph.add_conditional_edges(
@@ -95,7 +111,7 @@ def build_graph() -> StateGraph:
         should_fix,
         {
             "fix_generator": "fix_generator",
-            "finalize": "finalize",
+            "finalize":      "finalize",
         },
     )
 
@@ -107,11 +123,11 @@ def build_graph() -> StateGraph:
         should_commit,
         {
             "git_commit": "git_commit",
-            "finalize": "finalize",
+            "finalize":   "finalize",
         },
     )
 
-    graph.add_edge("git_commit", "create_pull_request")
+    graph.add_edge("git_commit",         "create_pull_request")
     graph.add_edge("create_pull_request", "ci_monitor")
 
     # ── Conditional: iterate or finalize ──────────────────
@@ -120,7 +136,7 @@ def build_graph() -> StateGraph:
         should_iterate,
         {
             "static_analyzer": "static_analyzer",
-            "finalize": "finalize",
+            "finalize":        "finalize",
         },
     )
 
@@ -141,7 +157,6 @@ def get_compiled_graph():
 
 
 # ── Public entry point ────────────────────────────────────
-# Called by ai-engine/api/main.py
 
 def run_agent(
     repo_url: str,
@@ -176,14 +191,18 @@ def run_agent(
     try:
         final_state = graph.invoke(initial_state)
         logger.info(
-            "Agent run complete: status=%s fixes=%d",
+            "Agent run complete: status=%s fixes=%d iterations=%d",
             final_state.get("final_status"),
             len(final_state.get("fixes", [])),
+            final_state.get("current_iteration", 1),
         )
         return final_state
 
     except Exception as e:
         logger.exception("Agent run crashed: %s", e)
-        # Return a minimal failed state so callers always get a response
+        # Return a minimal failed state so callers always get a structured response
         initial_state["final_status"] = RunStatus.FAILED.value
+        initial_state["agent_errors"] = [
+            f"Agent run crashed with unhandled exception: {type(e).__name__}: {e}"
+        ]
         return initial_state
