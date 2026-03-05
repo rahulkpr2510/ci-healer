@@ -8,8 +8,10 @@ import asyncio
 from contextlib import asynccontextmanager
 from collections import defaultdict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.schemas import EngineRunRequest, EngineRunResult, ScoreResult, FixResult, CiRunResult
 from engine.orchestrator import run_agent
@@ -26,8 +28,36 @@ _ALLOWED_ORIGINS = (
 )
 
 # ── Per-run live event store ───────────────────────────────
-# run_id → list of {"type": "log", "level": ..., "text": ...}
+# run_id → list of {"type": ..., "node": ..., "level": ..., "text": ...}
 _run_events: dict[str, list[dict]] = {}
+
+# Maps all node key aliases used by the orchestrator → canonical frontend pipeline keys
+_NODE_KEY_MAP: dict[str, str] = {
+    "repo_analyzer":      "repo_analyzer",
+    "repo":               "repo_analyzer",
+    "language_detector":  "detect_lang",
+    "lang":               "detect_lang",
+    "detect_lang":        "detect_lang",
+    "static_analyzer":    "static_analyzer",
+    "static":             "static_analyzer",
+    "test_runner":        "run_tests",
+    "test":               "run_tests",
+    "run_tests":          "run_tests",
+    "failure_classifier": "failure_classifier",
+    "classify":           "failure_classifier",
+    "fix_generator":      "fix_generator",
+    "fix":                "fix_generator",
+    "patch_applier":      "patch_applier",
+    "patch":              "patch_applier",
+    "git_commit":         "git_commit",
+    "commit":             "git_commit",
+    "create_pull_request":"create_pr",
+    "pr":                 "create_pr",
+    "ci_monitor":         "ci_monitor",
+    "ci":                 "ci_monitor",
+    "finalize":           "finalize",
+    "final":              "finalize",
+}
 
 
 def _make_observer(run_id: str):
@@ -73,14 +103,25 @@ def _make_observer(run_id: str):
             if node in ("static_analyzer", "static"):
                 n = event.get("findings_count", "?")
                 msg = f"  Static analysis: {n} findings"
+            elif node in ("language_detector", "lang", "detect_lang"):
+                lang = event.get("primary_language", "unknown")
+                tier = event.get("support_tier", "")
+                tier_label = {"full": "✅ full support", "partial": "⚠️  partial support", "none": "❌ no tooling"}.get(tier, tier)
+                msg = f"  Language: {lang}" + (f" ({tier_label})" if tier_label else "")
+                level = "success" if tier == "full" else "warning" if tier in ("partial", "none") else "info"
             elif node in ("test_runner", "test"):
                 passed = event.get("test_passed", event.get("passed", False))
                 msg = "  ✅ Tests PASSED" if passed else "  ❌ Tests FAILED"
                 level = "success" if passed else "error"
             elif node in ("failure_classifier", "classify"):
                 n = event.get("failures_count", 0)
-                msg = f"  Classified {n} failure(s)"
-                level = "warning" if n > 0 else "success"
+                skip = event.get("skip_reason")
+                if n == 0 and skip:
+                    msg   = f"  ℹ️  {skip}"
+                    level = "info"
+                else:
+                    msg   = f"  Classified {n} failure(s)"
+                    level = "warning" if n > 0 else "success"
             elif node in ("fix_generator", "fix"):
                 n = event.get("fixes_count", 0)
                 skipped = event.get("skipped")
@@ -109,14 +150,37 @@ def _make_observer(run_id: str):
                 status = event.get("final_status", "?")
                 level  = "success" if status == "PASSED" else ("error" if status == "FAILED" else "info")
                 msg    = f"  CI: {status}"
+            elif node in ("finalize", "final"):
+                skip = event.get("skip_reason")
+                status = event.get("final_status", "?")
+                if status == "NO_ISSUES" and skip:
+                    msg   = f"  ℹ️  {skip}"
+                    level = "info"
+                else:
+                    msg   = f"  Final status: {status}"
             elif node in ("repo_analyzer", "repo"):
                 files = event.get("source_count", event.get("source_files_count", "?"))
                 tests = event.get("test_count", event.get("test_files_count", "?"))
                 msg = f"  Scanned: {files} source files, {tests} test files"
 
+            # Always surface tool-level errors (missing linters, timeouts) as warnings,
+            # regardless of which node emitted them.
+            tool_errors = event.get("tool_errors", [])
+            if tool_errors:
+                for err in tool_errors:
+                    events_list = _run_events.setdefault(run_id, [])
+                    events_list.append({"type": "log", "level": "warn", "text": f"  ⚠️  {err}"})
+
         if msg:
             events = _run_events.setdefault(run_id, [])
-            events.append({"type": "log", "level": level, "text": msg})
+            pipeline_key = _NODE_KEY_MAP.get(node)
+            # Use "node_start" / "node_end" as the event type so the frontend
+            # pipeline can track which step is currently active vs completed.
+            event_type = ev_type if ev_type in ("node_start", "node_end") else "log"
+            entry: dict = {"type": event_type, "level": level, "text": msg}
+            if pipeline_key:
+                entry["node"] = pipeline_key
+            events.append(entry)
 
     return observer
 
@@ -149,6 +213,23 @@ app.add_middleware(
 )
 
 
+# ── Global exception handlers ─────────────────────────────
+
+@app.exception_handler(RequestValidationError)
+async def validation_handler(request: Request, exc: RequestValidationError):
+    errors = [
+        {"field": " → ".join(str(loc) for loc in e.get("loc", [])), "message": e["msg"]}
+        for e in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": "Validation error", "errors": errors})
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled engine exception: %s", exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal engine error"})
+
+
 # ── POST /engine/run ──────────────────────────────────────
 @app.post("/engine/run", response_model=EngineRunResult)
 async def run_engine(request: EngineRunRequest):
@@ -157,6 +238,14 @@ async def run_engine(request: EngineRunRequest):
     Called exclusively by backend/app/services/run_service.py.
     """
     from concurrent.futures import ThreadPoolExecutor
+    import re
+
+    # Guard: validate repo URL format
+    if not re.match(r"https://github\.com/[^/]+/[^/]+", request.repo_url):
+        raise HTTPException(
+            status_code=400,
+            detail="repo_url must be a valid GitHub repository URL (https://github.com/owner/repo)",
+        )
 
     # Use the backend's run_id so log polling is correlated
     run_id = request.run_id or str(uuid.uuid4())
@@ -238,6 +327,16 @@ async def run_engine(request: EngineRunRequest):
             except Exception:
                 pass
 
+    agent_errors = final_state.get("agent_errors", [])
+
+    # Emit any accumulated agent errors as warning log lines so they appear in the
+    # frontend log stream even if the observer didn't catch them during the run.
+    if agent_errors:
+        _run_events.setdefault(run_id, []).extend([
+            {"type": "log", "level": "warn", "text": f"  ⚠️  {err}"}
+            for err in agent_errors
+        ])
+
     return EngineRunResult(
         final_status=final_state.get("final_status", "FAILED"),
         branch_name=final_state.get("branch_name"),
@@ -246,10 +345,15 @@ async def run_engine(request: EngineRunRequest):
         total_fixes_applied=len([f for f in fixes if f.status == FixStatus.FIXED]),
         total_commits=len(final_state.get("commits", [])),
         total_time_seconds=final_state.get("total_time_seconds"),
+        skip_reason=final_state.get("skip_reason"),
+        primary_language=final_state.get("primary_language"),
+        detected_languages=final_state.get("detected_languages", []),
+        iterations_run=final_state.get("current_iteration", 1),
         score=score_result,
         fixes=fix_results,
         ci_timeline=ci_results,
         agent_output=[f.to_agent_output() for f in failures],
+        agent_errors=agent_errors,
         results_json=results_json,
     )
 
