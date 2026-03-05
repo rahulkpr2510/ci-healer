@@ -110,9 +110,9 @@ async def _run_agent_background(
             "run_id": run_id,
         })
 
-        # ── Call AI Engine (with live log polling in parallel) ──
+        # ── Call AI Engine (with live SSE log streaming in parallel) ──
         poll_task = asyncio.create_task(
-            _poll_engine_logs(run_id)
+            _stream_engine_logs(run_id)
         )
         try:
             engine_result = await _call_engine(
@@ -263,26 +263,42 @@ async def _broadcast_semantic_events(run_id: str, engine_result: dict) -> None:
 
 # ── Call the AI engine HTTP service ──────────────────────
 
-async def _poll_engine_logs(run_id: str) -> None:
+async def _stream_engine_logs(run_id: str) -> None:
     """
-    Polls the AI engine's /runs/{run_id}/log endpoint every 2 s
-    and forwards any new log events to the SSE stream in real time.
+    Opens a single SSE connection to the AI engine's /runs/{run_id}/stream
+    endpoint and forwards events to the local SSE broadcast as they arrive.
+    Replaces the old 2-second polling loop to eliminate constant HTTP chatter.
     """
-    seen = 0
-    while True:
-        await asyncio.sleep(2)
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(
-                    f"{settings.AI_ENGINE_URL}/runs/{run_id}/log"
-                )
-                if resp.status_code == 200:
-                    events = resp.json().get("events", [])
-                    for ev in events[seen:]:
-                        await broadcast(run_id, ev)
-                    seen = len(events)
-        except Exception:
-            pass  # engine temporarily unavailable — keep retrying
+    url = f"{settings.AI_ENGINE_URL}/runs/{run_id}/stream"
+    try:
+        async with httpx.AsyncClient() as client:
+            async with client.stream(
+                "GET",
+                url,
+                timeout=httpx.Timeout(connect=10.0, read=None, write=5.0, pool=5.0),
+            ) as response:
+                if response.status_code != 200:
+                    logger.warning(
+                        "Engine SSE stream returned %s for run %s",
+                        response.status_code, run_id,
+                    )
+                    return
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        event = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
+                    ev_type = event.get("type")
+                    if ev_type == "done":
+                        break
+                    if ev_type != "ping":
+                        await broadcast(run_id, event)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("Engine SSE stream error for run %s: %s", run_id, e)
 
 
 async def _call_engine(
