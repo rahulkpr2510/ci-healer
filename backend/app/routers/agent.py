@@ -114,6 +114,15 @@ async def get_run_status(
     )
     ci_events = ci_result.scalars().all()
 
+    # Extract language / errors / iterations from persisted results_json blob
+    _extra: dict = {}
+    if run.results_json:
+        try:
+            import json as _json
+            _extra = _json.loads(run.results_json)
+        except Exception:
+            pass
+
     return RunDetailResponse(
         run_id=run.run_id,
         repo_url=run.repo_url,
@@ -160,6 +169,10 @@ async def get_run_status(
             for e in ci_events
         ],
         created_at=run.created_at.isoformat(),
+        primary_language=_extra.get("primary_language"),
+        detected_languages=_extra.get("detected_languages") or [],
+        agent_errors=_extra.get("agent_errors") or [],
+        iterations_run=_extra.get("iterations_run") or 0,
     )
 
 
