@@ -145,16 +145,30 @@ async def _run_agent_background(
 
         # ── Broadcast RUN_COMPLETED ────────────────────────
         final_status = engine_result.get("final_status", "FAILED")
+        skip_reason  = engine_result.get("skip_reason")
+
+        # When there's nothing to fix, emit an informational log line
+        # so users see a clear explanation rather than a bare status.
+        if final_status == "NO_ISSUES" and skip_reason:
+            await broadcast(run_id, {
+                "type": "log",
+                "level": "info",
+                "run_id": run_id,
+                "text": f"ℹ️  {skip_reason}",
+            })
+
         await broadcast(run_id, {
             "type": "RUN_COMPLETED",
             "run_id": run_id,
             "final_status": final_status,
             "score": engine_result.get("score", {}).get("final_score", 0),
+            "skip_reason": skip_reason,
         })
         await broadcast(run_id, {
             "type": "complete",
             "run_id": run_id,
             "final_status": final_status,
+            "skip_reason": skip_reason,
         })
 
     except Exception as e:
@@ -181,6 +195,27 @@ async def _broadcast_semantic_events(run_id: str, engine_result: dict) -> None:
             "type": "REPO_CLONED",
             "run_id": run_id,
             "branch_name": engine_result.get("branch_name"),
+            "primary_language": engine_result.get("primary_language"),
+            "detected_languages": engine_result.get("detected_languages", []),
+        })
+
+    # Log primary language detection
+    primary_lang = engine_result.get("primary_language")
+    if primary_lang and primary_lang != "unknown":
+        await broadcast(run_id, {
+            "type": "log",
+            "level": "info",
+            "run_id": run_id,
+            "text": f"🌐 Detected language: {primary_lang}",
+        })
+
+    # Broadcast tool-level errors (missing linters, timeouts, etc.) as warnings
+    for err in engine_result.get("agent_errors", []):
+        await broadcast(run_id, {
+            "type": "log",
+            "level": "warn",
+            "run_id": run_id,
+            "text": f"⚠️  Tool error: {err}",
         })
 
     # TEST_DISCOVERED + TEST_FAILED
@@ -374,7 +409,13 @@ async def _persist_result(
     run.efficiency_penalty = score.get("efficiency_penalty", 0)
     run.final_score = score.get("final_score", 0)
     run.finished_at = datetime.now(timezone.utc)
-    run.results_json = json.dumps(engine_result.get("results_json") or {})
+    run.results_json = json.dumps({
+        "results_json":        engine_result.get("results_json") or {},
+        "primary_language":    engine_result.get("primary_language"),
+        "detected_languages":  engine_result.get("detected_languages", []),
+        "agent_errors":        engine_result.get("agent_errors", []),
+        "iterations_run":      engine_result.get("iterations_run", 0),
+    })
 
     # ── Persist fixes ─────────────────────────────────────
     for fix_data in engine_result.get("fixes", []):
