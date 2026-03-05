@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     # ── AI Engine ─────────────────────────────────────────
     AI_ENGINE_URL: str = "http://localhost:8001"
     AI_ENGINE_TIMEOUT: int = 600
+    # How often (seconds) the backend pings the engine to prevent Render idle
+    AI_ENGINE_KEEPALIVE_INTERVAL: int = 300  # 5 minutes
 
     # ── CORS — stored as plain str, parsed into list below
     ALLOWED_ORIGINS: str = "http://localhost:3000"
