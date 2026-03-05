@@ -274,24 +274,73 @@ async def _call_engine(
         "text": f"Connecting to AI engine at {settings.AI_ENGINE_URL}",
     })
 
-    async with httpx.AsyncClient(timeout=settings.AI_ENGINE_TIMEOUT) as client:
-        response = await client.post(
-            f"{settings.AI_ENGINE_URL}/engine/run",
-            json=payload,
-        )
+    # Transient HTTP status codes that warrant a retry (engine starting up / overloaded)
+    _RETRYABLE_STATUSES = {502, 503, 504}
+    _MAX_RETRIES = 5
+    _BASE_DELAY = 5  # seconds
 
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"AI engine returned {response.status_code}: {response.text[:300]}"
-        )
+    last_error: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=settings.AI_ENGINE_TIMEOUT) as client:
+                response = await client.post(
+                    f"{settings.AI_ENGINE_URL}/engine/run",
+                    json=payload,
+                )
 
-    result = response.json()
-    await broadcast(run_id, {
-        "type": "log", "level": "success",
-        "text": f"Engine completed with status: {result.get('final_status')}",
-    })
+            if response.status_code == 200:
+                result = response.json()
+                await broadcast(run_id, {
+                    "type": "log", "level": "success",
+                    "text": f"Engine completed with status: {result.get('final_status')}",
+                })
+                return result
 
-    return result
+            if response.status_code in _RETRYABLE_STATUSES:
+                last_error = RuntimeError(
+                    f"AI engine returned {response.status_code}: {response.text[:300]}"
+                )
+                delay = _BASE_DELAY * attempt
+                logger.warning(
+                    "Engine returned %s on attempt %d/%d for run %s — retrying in %ds",
+                    response.status_code, attempt, _MAX_RETRIES, run_id, delay,
+                )
+                await broadcast(run_id, {
+                    "type": "log", "level": "warn",
+                    "text": (
+                        f"AI engine returned {response.status_code} "
+                        f"(attempt {attempt}/{_MAX_RETRIES}) — "
+                        f"retrying in {delay}s…"
+                    ),
+                })
+                await asyncio.sleep(delay)
+                continue
+
+            # Non-retryable error (4xx, etc.) — fail immediately
+            raise RuntimeError(
+                f"AI engine returned {response.status_code}: {response.text[:300]}"
+            )
+
+        except httpx.TransportError as exc:
+            # Connection-level failures (engine not yet up, network hiccup)
+            last_error = exc
+            delay = _BASE_DELAY * attempt
+            logger.warning(
+                "Engine connection error on attempt %d/%d for run %s (%s) — retrying in %ds",
+                attempt, _MAX_RETRIES, run_id, exc, delay,
+            )
+            await broadcast(run_id, {
+                "type": "log", "level": "warn",
+                "text": (
+                    f"Cannot reach AI engine (attempt {attempt}/{_MAX_RETRIES}) — "
+                    f"retrying in {delay}s…"
+                ),
+            })
+            await asyncio.sleep(delay)
+
+    raise RuntimeError(
+        f"AI engine unavailable after {_MAX_RETRIES} attempts: {last_error}"
+    )
 
 
 # ── Persist engine result to DB ───────────────────────────
