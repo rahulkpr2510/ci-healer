@@ -49,54 +49,70 @@ def finalize(state: AgentState) -> dict:
     # ── Determine final status ────────────────────────────
     ci_runs = state.get("ci_runs", [])
     existing_status = state.get("final_status")
+    skip_reason = state.get("skip_reason")
+    failures = state.get("failures", [])
 
     if existing_status == RunStatus.PASSED.value:
         final_status = RunStatus.PASSED.value
     elif ci_runs and ci_runs[-1].status == RunStatus.PASSED:
         final_status = RunStatus.PASSED.value
+    elif not failures and skip_reason:
+        # Nothing to fix — unsupported language, no issues found, etc.
+        final_status = RunStatus.NO_ISSUES.value
     else:
         fixes = state.get("fixes", [])
         all_fixed = fixes and all(f.status == FixStatus.FIXED for f in fixes)
         final_status = RunStatus.PASSED.value if all_fixed else RunStatus.FAILED.value
 
     # ── Build results payload ─────────────────────────────
-    fixes = state.get("fixes", [])
-    failures = state.get("failures", [])
+    fixes        = state.get("fixes", [])
+    failures     = state.get("failures", [])
+    agent_errors = state.get("agent_errors", [])
 
     results = {
         "run_summary": {
-            "repo_url": state["repo_url"],
-            "team_name": state["team_name"],
-            "team_leader": state["team_leader"],
-            "branch_name": state.get("branch_name"),
+            "repo_url":               state["repo_url"],
+            "team_name":              state["team_name"],
+            "team_leader":            state["team_leader"],
+            "branch_name":            state.get("branch_name"),
+            "primary_language":       state.get("primary_language", "unknown"),
+            "detected_languages":     state.get("detected_languages", []),
             "total_failures_detected": len(failures),
-            "total_fixes_applied": len([f for f in fixes if f.status == FixStatus.FIXED]),
-            "final_ci_status": final_status,
-            "start_time": start_time,
-            "end_time": end_time,
-            "total_time_seconds": total_seconds,
+            "total_fixes_applied":    len([f for f in fixes if f.status == FixStatus.FIXED]),
+            "total_fixes_failed":     len([f for f in fixes if f.status == FixStatus.FAILED]),
+            "total_fixes_skipped":    len([f for f in fixes if f.status == FixStatus.SKIPPED]),
+            "iterations_run":         state.get("current_iteration", 1),
+            "max_iterations":         state.get("max_iterations", 5),
+            "final_ci_status":        final_status,
+            "skip_reason":            skip_reason,
+            "start_time":             start_time,
+            "end_time":               end_time,
+            "total_time_seconds":     total_seconds,
         },
         "score_breakdown": score.model_dump(),
         "fixes": [
             {
-                "file": f.file,
-                "bug_type": f.bug_type.value,
-                "line_number": f.line,
+                "file":           f.file,
+                "bug_type":       f.bug_type.value,
+                "line_number":    f.line,
                 "commit_message": f.commit_message,
-                "status": f.status.value,
+                "status":         f.status.value,
+                "diff":           f.diff if f.diff else "",
             }
             for f in fixes
         ],
         "ci_timeline": [
             {
-                "iteration": r.iteration,
-                "status": r.status.value,
-                "timestamp": r.timestamp,
+                "iteration":       r.iteration,
+                "status":          r.status.value,
+                "timestamp":       r.timestamp,
                 "iteration_label": f"{r.iteration}/{state['max_iterations']}",
             }
             for r in ci_runs
         ],
         "agent_output": [f.to_agent_output() for f in failures],
+        # Tool-level errors (missing tools, timeouts, infra issues)
+        "agent_errors":  agent_errors,
     }
 
     # ── Write results.json to repo workspace ─────────────
@@ -113,7 +129,10 @@ def finalize(state: AgentState) -> dict:
     emit(state, "node_end", "final",
          final_status=final_status,
          failures_count=len(failures),
-         fixes_count=len([f for f in fixes if f.status == FixStatus.FIXED]))
+         fixes_count=len([f for f in fixes if f.status == FixStatus.FIXED]),
+         skip_reason=skip_reason,
+         agent_errors=agent_errors,
+         iterations_run=state.get("current_iteration", 1))
 
     return {
         "end_time": end_time,
