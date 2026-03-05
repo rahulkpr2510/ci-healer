@@ -9,7 +9,8 @@ import {
   GitBranch,
   BarChart2,
   Settings,
-  Cpu,
+  Zap,
+  Activity,
 } from "lucide-react";
 
 const NAV = [
@@ -26,15 +27,13 @@ export default function Sidebar() {
     <aside className="flex flex-col w-56 shrink-0 h-screen sticky top-0 bg-zinc-50 dark:bg-zinc-950 border-r border-zinc-200 dark:border-zinc-800/60">
       {/* Logo */}
       <div className="h-[57px] flex items-center gap-2.5 px-4 border-b border-zinc-200 dark:border-zinc-800/60">
-        <div className="w-7 h-7 rounded-lg bg-zinc-900 dark:bg-white flex items-center justify-center shrink-0">
-          <span className="text-[11px] font-bold text-white dark:text-zinc-900">
-            CI
-          </span>
+        <div className="w-7 h-7 rounded-lg bg-zinc-900 dark:bg-white flex items-center justify-center shrink-0 shadow-sm">
+          <Activity size={13} className="text-white dark:text-zinc-900" />
         </div>
         <span className="font-semibold text-zinc-900 dark:text-white text-sm tracking-tight">
           CI Healer
         </span>
-        <span className="ml-auto text-[10px] font-medium text-zinc-400 dark:text-zinc-500 bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">
+        <span className="ml-auto text-[10px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 px-1.5 py-0.5 rounded">
           AI
         </span>
       </div>
@@ -45,7 +44,8 @@ export default function Sidebar() {
           const active =
             path === href ||
             path.startsWith(href + "/") ||
-            (href === "/repos" && path.startsWith("/repo/"));
+            (href === "/repos" && path.startsWith("/repo/")) ||
+            (href === "/dashboard" && path.startsWith("/run/"));
 
           return (
             <Link
@@ -67,11 +67,12 @@ export default function Sidebar() {
 
       {/* Bottom — model badge */}
       <div className="p-3 border-t border-zinc-200 dark:border-zinc-800/60">
-        <div className="flex items-center gap-1.5">
-          <Cpu size={11} className="text-zinc-400 dark:text-zinc-600" />
-          <span className="text-[11px] text-zinc-400 dark:text-zinc-600">
+        <div className="flex items-center gap-1.5 px-2 py-2 rounded-lg bg-zinc-100 dark:bg-zinc-900/60">
+          <Zap size={11} className="text-violet-500" />
+          <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium">
             Gemini 2.5 Flash
           </span>
+          <span className="ml-auto w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
         </div>
       </div>
     </aside>
