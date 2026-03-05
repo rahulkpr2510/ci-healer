@@ -1,4 +1,4 @@
-export type RunStatus = "RUNNING" | "PASSED" | "FAILED";
+export type RunStatus = "RUNNING" | "PASSED" | "FAILED" | "NO_ISSUES";
 
 export type BugType =
   | "LINTING"
@@ -6,7 +6,12 @@ export type BugType =
   | "LOGIC"
   | "TYPEERROR"
   | "IMPORT"
-  | "INDENTATION";
+  | "INDENTATION"
+  | "COMPILATION"
+  | "RUNTIME"
+  | "DEPENDENCY"
+  | "SECURITY"
+  | "FORMATTING";
 
 export type FixStatus = "FIXED" | "FAILED" | "SKIPPED";
 
@@ -75,6 +80,12 @@ export interface Run {
 
   fixes: Fix[];
   ci_timeline: CiEvent[];
+
+  // Language detection (filled after run completes or via SSE)
+  primary_language?: string | null;
+  detected_languages?: string[];
+  agent_errors?: string[];
+  iterations_run?: number;
 
   created_at: string;
 }
@@ -197,4 +208,13 @@ export interface SSEEvent {
   commit_count?: number;
   iteration?: number;
   score?: number;
+  skip_reason?: string; // set when final_status === "NO_ISSUES"
+
+  // Language-related
+  primary_language?: string;
+  detected_languages?: string[];
+  language_tier?: "full" | "partial" | "none";
+
+  // Agent tool errors
+  agent_errors?: string[];
 }
