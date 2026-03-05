@@ -52,10 +52,10 @@ class CiEventSchema(BaseModel):
 
 class RunRequest(BaseModel):
     repo_url:       str
-    team_name:      str
-    team_leader:    str
-    max_iterations: int  = Field(5,     ge=1, le=20)
-    read_only:      bool = False
+    team_name:      str   = Field(..., min_length=1, max_length=100,  description="Team name")
+    team_leader:    str   = Field(..., min_length=1, max_length=100,  description="GitHub username")
+    max_iterations: int   = Field(5, ge=1, le=10, description="Max fix iterations (1–10)")
+    read_only:      bool  = False
 
 
 class RunStartResponse(BaseModel):
@@ -86,6 +86,11 @@ class RunDetailResponse(BaseModel):
     fixes:                   list[FixSchema]      = []
     ci_timeline:             list[CiEventSchema]  = []
     created_at:              str
+    # Language & diagnostics (populated from results_json stored on Run)
+    primary_language:        Optional[str]        = None
+    detected_languages:      list[str]            = []
+    agent_errors:            list[str]            = []
+    iterations_run:          int                  = 0
 
 
 # ── Run summary (used in lists) ─────────────────────────────────────────────
