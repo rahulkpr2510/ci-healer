@@ -156,12 +156,18 @@ export default function DashboardPage() {
       {/* Recent runs */}
       <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-white">
-            Recent Runs
-          </h2>
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-white">
+              Recent Runs
+            </h2>
+            <p className="text-xs text-zinc-400 dark:text-zinc-600 mt-0.5">
+              Last {runs.length} run{runs.length !== 1 ? "s" : ""} across all
+              repos
+            </p>
+          </div>
           <Link
             href="/repos"
-            className="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:hover:text-white"
+            className="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition-colors"
           >
             New run →
           </Link>
@@ -178,72 +184,106 @@ export default function DashboardPage() {
             ))}
           </div>
         ) : runs.length === 0 ? (
-          <div className="px-5 py-10 text-center text-sm text-zinc-400 dark:text-zinc-600">
-            No runs yet.{" "}
+          <div className="px-5 py-12 text-center">
+            <div className="w-10 h-10 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center mx-auto mb-3">
+              <GitBranch size={18} className="text-zinc-400" />
+            </div>
+            <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400">
+              No runs yet
+            </p>
+            <p className="text-xs text-zinc-400 dark:text-zinc-600 mt-1">
+              Connect a repo and trigger your first healing run.
+            </p>
             <Link
               href="/repos"
-              className="text-zinc-900 dark:text-white underline"
+              className="inline-flex items-center gap-1.5 mt-4 px-3 py-1.5 rounded-lg bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 text-xs font-semibold hover:bg-zinc-700 dark:hover:bg-zinc-100 transition-colors"
             >
-              Start your first run →
+              <Play size={11} /> Start your first run
             </Link>
           </div>
         ) : (
           <div className="divide-y divide-zinc-100 dark:divide-zinc-800/60">
-            {runs.map((r) => (
-              <div
-                key={r.run_id}
-                className="flex items-center gap-3 px-5 py-3.5 hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors group"
-              >
-                {/* Status icon */}
-                <Link href={`/run/${r.run_id}`} className="shrink-0">
-                  {r.final_status === "PASSED" ? (
-                    <CheckCircle2 size={15} className="text-emerald-500" />
-                  ) : r.final_status === "FAILED" ? (
-                    <XCircle size={15} className="text-red-500" />
-                  ) : (
-                    <RefreshCw
-                      size={15}
-                      className="text-zinc-400 animate-spin"
-                    />
-                  )}
-                </Link>
+            {runs.map((r) => {
+              const statusBar =
+                r.final_status === "PASSED"
+                  ? "bg-emerald-500"
+                  : r.final_status === "FAILED"
+                    ? "bg-red-500"
+                    : r.final_status === "NO_ISSUES"
+                      ? "bg-amber-400"
+                      : "bg-zinc-400";
 
-                {/* Repo */}
-                <Link href={`/run/${r.run_id}`} className="min-w-0 flex-1">
-                  <p className="text-sm text-zinc-800 dark:text-zinc-200 font-medium truncate">
-                    {r.repo_owner}/{r.repo_name}
-                  </p>
-                  <p className="text-xs text-zinc-400 dark:text-zinc-600 truncate">
-                    {r.started_at
-                      ? new Date(r.started_at).toLocaleString()
-                      : "—"}
-                  </p>
-                </Link>
+              return (
+                <div
+                  key={r.run_id}
+                  className="relative flex items-center gap-3 px-5 py-3.5 hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors group"
+                >
+                  {/* Status bar */}
+                  <div
+                    className={`absolute left-0 inset-y-0 w-0.5 ${statusBar} opacity-60 group-hover:opacity-100 transition-opacity`}
+                  />
 
-                {/* Badge + score + quick run */}
-                <div className="flex items-center gap-2 shrink-0">
-                  <RunStatusBadge status={r.final_status} />
-                  <span className="text-xs text-zinc-400 dark:text-zinc-500 hidden sm:block">
-                    {r.total_fixes_applied} fix
-                    {r.total_fixes_applied !== 1 ? "es" : ""}
-                  </span>
-                  <span className="text-xs font-mono text-zinc-400 dark:text-zinc-500 hidden sm:block">
-                    {r.final_score ?? "—"} pts
-                  </span>
-                  <button
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleQuickRun(r);
-                    }}
-                    className="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-all"
-                    title="Re-run this repo"
-                  >
-                    <Play size={12} />
-                  </button>
+                  {/* Status icon */}
+                  <Link href={`/run/${r.run_id}`} className="shrink-0 ml-2">
+                    {r.final_status === "PASSED" ? (
+                      <CheckCircle2 size={15} className="text-emerald-500" />
+                    ) : r.final_status === "FAILED" ? (
+                      <XCircle size={15} className="text-red-500" />
+                    ) : r.final_status === "NO_ISSUES" ? (
+                      <CheckCircle2 size={15} className="text-amber-400" />
+                    ) : (
+                      <RefreshCw
+                        size={15}
+                        className="text-zinc-400 animate-spin"
+                      />
+                    )}
+                  </Link>
+
+                  {/* Repo */}
+                  <Link href={`/run/${r.run_id}`} className="min-w-0 flex-1">
+                    <p className="text-sm text-zinc-800 dark:text-zinc-200 font-mono font-medium truncate">
+                      {r.repo_owner}/{r.repo_name}
+                    </p>
+                    <p className="text-xs text-zinc-400 dark:text-zinc-600 truncate mt-0.5">
+                      {r.started_at
+                        ? new Date(r.started_at).toLocaleString(undefined, {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })
+                        : "—"}
+                      {r.total_time_seconds
+                        ? ` · ${r.total_time_seconds < 60 ? `${r.total_time_seconds.toFixed(0)}s` : `${Math.floor(r.total_time_seconds / 60)}m ${Math.round(r.total_time_seconds % 60)}s`}`
+                        : ""}
+                    </p>
+                  </Link>
+
+                  {/* Stats + quick run */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <RunStatusBadge status={r.final_status} />
+                    <span className="text-xs text-zinc-400 dark:text-zinc-500 hidden sm:block tabular-nums">
+                      {r.total_fixes_applied} fix
+                      {r.total_fixes_applied !== 1 ? "es" : ""}
+                    </span>
+                    <span className="text-xs font-mono text-zinc-500 dark:text-zinc-400 hidden sm:block bg-zinc-50 dark:bg-zinc-800 px-1.5 py-0.5 rounded font-semibold tabular-nums">
+                      {r.final_score ?? "—"} pts
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleQuickRun(r);
+                      }}
+                      className="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-all"
+                      title="Re-run this repo"
+                    >
+                      <Play size={12} />
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
