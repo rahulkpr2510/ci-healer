@@ -11,7 +11,7 @@ from collections import defaultdict
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from api.schemas import EngineRunRequest, EngineRunResult, ScoreResult, FixResult, CiRunResult
 from engine.orchestrator import run_agent
@@ -30,6 +30,8 @@ _ALLOWED_ORIGINS = (
 # ── Per-run live event store ───────────────────────────────
 # run_id → list of {"type": ..., "node": ..., "level": ..., "text": ...}
 _run_events: dict[str, list[dict]] = {}
+_run_signals: dict[str, asyncio.Event] = {}   # signals new events for SSE streaming
+_run_done: dict[str, bool] = {}               # True once a run finishes
 
 # Maps all node key aliases used by the orchestrator → canonical frontend pipeline keys
 _NODE_KEY_MAP: dict[str, str] = {
@@ -60,7 +62,7 @@ _NODE_KEY_MAP: dict[str, str] = {
 }
 
 
-def _make_observer(run_id: str):
+def _make_observer(run_id: str, loop: asyncio.AbstractEventLoop):
     """
     Returns a callable observer that translates raw node events
     into frontend-friendly log messages and stores them per run_id.
@@ -182,6 +184,12 @@ def _make_observer(run_id: str):
                 entry["node"] = pipeline_key
             events.append(entry)
 
+        # Wake up any SSE stream consumers waiting for new events (thread-safe)
+        if msg or tool_errors:
+            sig = _run_signals.get(run_id)
+            if sig is not None:
+                loop.call_soon_threadsafe(sig.set)
+
     return observer
 
 
@@ -247,10 +255,16 @@ async def run_engine(request: EngineRunRequest):
             detail="repo_url must be a valid GitHub repository URL (https://github.com/owner/repo)",
         )
 
-    # Use the backend's run_id so log polling is correlated
+    # Use the backend's run_id so log streaming is correlated
     run_id = request.run_id or str(uuid.uuid4())
-    _run_events[run_id] = [{"type": "log", "level": "info", "text": f"🚀 Run started: {request.repo_url}"}]
-    observer = _make_observer(run_id)
+    loop = asyncio.get_running_loop()
+    sig = asyncio.Event()
+    _run_signals[run_id] = sig
+    _run_done[run_id] = False
+    initial_ev = {"type": "log", "level": "info", "text": f"🚀 Run started: {request.repo_url}"}
+    _run_events[run_id] = [initial_ev]
+    sig.set()  # wake up any SSE consumer already waiting
+    observer = _make_observer(run_id, loop)
 
     logger.info("Engine run requested: repo=%s team=%s run_id=%s", request.repo_url, request.team_name, run_id)
 
@@ -272,13 +286,18 @@ async def run_engine(request: EngineRunRequest):
         )
     except Exception as e:
         logger.exception("Agent run failed: %s", e)
-        _run_events.pop(run_id, None)
+        _run_done[run_id] = True
+        sig = _run_signals.get(run_id)
+        if sig is not None:
+            sig.set()
         raise HTTPException(status_code=500, detail=f"Agent run failed: {str(e)}")
 
     # Schedule cleanup of event store after 10 minutes
     async def _cleanup():
         await asyncio.sleep(600)
         _run_events.pop(run_id, None)
+        _run_signals.pop(run_id, None)
+        _run_done.pop(run_id, None)
     asyncio.create_task(_cleanup())
 
     # ── Map final state → response schema ─────────────────
@@ -337,6 +356,12 @@ async def run_engine(request: EngineRunRequest):
             for err in agent_errors
         ])
 
+    # Mark run complete and wake up SSE consumers (after all events are appended)
+    _run_done[run_id] = True
+    fin_sig = _run_signals.get(run_id)
+    if fin_sig is not None:
+        fin_sig.set()
+
     return EngineRunResult(
         final_status=final_state.get("final_status", "FAILED"),
         branch_name=final_state.get("branch_name"),
@@ -358,12 +383,66 @@ async def run_engine(request: EngineRunRequest):
     )
 
 
-# ── GET /runs/{run_id}/log ────────────────────────────────
+# ── GET /runs/{run_id}/stream  (SSE — one persistent connection per run) ────
+@app.get("/runs/{run_id}/stream")
+async def stream_run_log(run_id: str, request: Request):
+    """
+    Server-Sent Events endpoint: streams live log events to the backend as they
+    happen.  The backend opens ONE connection per run instead of polling every 2 s.
+    """
+    async def event_generator():
+        # Wait up to 5 s for the run to register its signal (engine might start
+        # a few ms after the backend opens the SSE connection).
+        for _ in range(50):
+            if run_id in _run_signals:
+                break
+            await asyncio.sleep(0.1)
+
+        sig = _run_signals.get(run_id)
+        if sig is None:
+            # Run unknown or already cleaned up — return whatever history we have.
+            for ev in _run_events.get(run_id, []):
+                yield f"data: {json.dumps(ev)}\n\n"
+            return
+
+        seen = 0
+        try:
+            while True:
+                # Clear BEFORE reading to avoid a missed-signal race:
+                # if the observer fires between clear() and wait(), the
+                # next list read will catch the new entry, or wait() will
+                # return immediately because set() was scheduled on the loop.
+                sig.clear()
+
+                events = _run_events.get(run_id, [])
+                for ev in events[seen:]:
+                    yield f"data: {json.dumps(ev)}\n\n"
+                seen = len(events)
+
+                if _run_done.get(run_id):
+                    yield f'data: {{"type": "done"}}\n\n'
+                    break
+
+                try:
+                    await asyncio.wait_for(sig.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    yield f'data: {{"type": "ping"}}\n\n'
+        except asyncio.CancelledError:
+            pass  # backend disconnected cleanly
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── GET /runs/{run_id}/log ────────────────────────────────────────
 @app.get("/runs/{run_id}/log")
 async def get_run_log(run_id: str):
     """
-    Returns accumulated live log events for a run.
-    Backend polls this every 2 s and forwards events to SSE.
+    Returns the full accumulated log event list for a run (snapshot).
+    Kept for debugging / fallback; the backend now uses /stream instead.
     """
     return {"run_id": run_id, "events": _run_events.get(run_id, [])}
 
