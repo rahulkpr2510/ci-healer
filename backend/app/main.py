@@ -10,6 +10,7 @@ from contextvars import ContextVar
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -179,6 +180,20 @@ app = FastAPI(
 # ── Rate limiter state ────────────────────────────────────
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# ── Validation error → clean JSON ─────────────────────────
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return machine-readable validation errors instead of the default FastAPI 422 HTML."""
+    errors = []
+    for e in exc.errors():
+        field = " → ".join(str(loc) for loc in e.get("loc", []))
+        errors.append({"field": field, "message": e["msg"]})
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Validation error", "errors": errors},
+    )
 
 
 # ── Request ID middleware ─────────────────────────────────
