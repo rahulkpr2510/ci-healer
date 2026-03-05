@@ -55,13 +55,15 @@ async def get_dashboard_summary(
 
     unique_repos = {f"{r.repo_owner}/{r.repo_name}" for r in runs}
     passed = [r for r in runs if r.final_status == "PASSED"]
+    # NO_ISSUES runs are healthy repos — exclude from pass-rate denominator
+    eligible = [r for r in runs if r.final_status in ("PASSED", "FAILED")]
     total_fixes = sum(r.total_fixes_applied or 0 for r in runs)
 
     return DashboardSummaryResponse(
         total_runs=len(runs),
         unique_repos=len(unique_repos),
         total_fixes_applied=total_fixes,
-        pass_rate=round(len(passed) / max(len(runs), 1) * 100, 1),
+        pass_rate=round(len(passed) / max(len(eligible), 1) * 100, 1),
         repos=list(unique_repos),
     )
 
@@ -97,6 +99,8 @@ async def get_repo_analytics(
     total_runs = len(runs)
     passed = [r for r in runs if r.final_status == "PASSED"]
     failed = [r for r in runs if r.final_status == "FAILED"]
+    # NO_ISSUES runs excluded from pass-rate denominator (healthy repos)
+    eligible = [r for r in runs if r.final_status in ("PASSED", "FAILED")]
 
     avg_time = (
         sum(r.total_time_seconds for r in runs if r.total_time_seconds)
@@ -126,7 +130,7 @@ async def get_repo_analytics(
             total_runs=total_runs,
             passed=len(passed),
             failed=len(failed),
-            pass_rate=round(len(passed) / total_runs * 100, 1),
+            pass_rate=round(len(passed) / max(len(eligible), 1) * 100, 1),
             avg_time_seconds=round(avg_time, 1),
             avg_score=round(avg_score, 1),
             avg_fixes_per_run=round(avg_fixes, 1),
