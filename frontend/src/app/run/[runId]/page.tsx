@@ -2,7 +2,7 @@
 
 "use client";
 
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -11,6 +11,9 @@ import {
   Zap,
   ExternalLink,
   RefreshCw,
+  Hash,
+  Layers,
+  AlertTriangle,
 } from "lucide-react";
 
 import { getRun, streamRun } from "@/lib/api";
@@ -18,8 +21,11 @@ import { useAgentStore } from "@/store/agentStore";
 import type { SSEEvent } from "@/types/agent";
 
 import RunStatusBadge from "@/components/ui/RunStatusBadge";
+import LanguageBadge from "@/components/ui/LanguageBadge";
 import LogStream from "@/components/run/LogStream";
 import FixesTable from "@/components/run/FixesTable";
+import AgentPipeline from "@/components/run/AgentPipeline";
+import AgentErrorsPanel from "@/components/run/AgentErrorsPanel";
 
 export default function RunPage() {
   const { runId } = useParams<{ runId: string }>();
@@ -41,7 +47,31 @@ export default function RunPage() {
 
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const running = activeRun?.final_status === "RUNNING" || runLoading;
+
+  // Live elapsed timer — counts up from started_at while run is RUNNING
+  const [elapsedSecs, setElapsedSecs] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!activeRun || activeRun.final_status !== "RUNNING") {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      setElapsedSecs(null);
+      return;
+    }
+    const startMs = activeRun.timing?.started_at
+      ? new Date(activeRun.timing.started_at).getTime()
+      : Date.now();
+    const tick = () => setElapsedSecs((Date.now() - startMs) / 1000);
+    tick();
+    timerRef.current = setInterval(tick, 1000);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [activeRun?.final_status, activeRun?.timing?.started_at]);
 
   // Stop any active polling interval
   const stopPolling = useCallback(() => {
@@ -164,10 +194,15 @@ export default function RunPage() {
     };
   }, [boot, stopPolling]);
 
-  function fmt(secs: number | null) {
-    if (!secs) return "—";
-    if (secs < 60) return `${secs.toFixed(1)}s`;
-    return `${Math.floor(secs / 60)}m ${Math.round(secs % 60)}s`;
+  function fmt(secs: number | null, live = false) {
+    if (secs == null) return "—";
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    const base =
+      m > 0
+        ? `${m}m ${s.toString().padStart(2, "0")}s`
+        : `${secs.toFixed(live ? 0 : 1)}s`;
+    return live ? `⏱ ${base}` : base;
   }
 
   if (runLoading) {
@@ -221,6 +256,12 @@ export default function RunPage() {
             <p className="text-xs text-zinc-400 dark:text-zinc-600 mt-1 font-mono truncate">
               run/{r.run_id}
             </p>
+            {/* Language badge */}
+            {r.primary_language && r.primary_language !== "Unknown" && (
+              <div className="mt-2">
+                <LanguageBadge language={r.primary_language} />
+              </div>
+            )}
           </div>
 
           {r.pr_url && (
@@ -246,7 +287,10 @@ export default function RunPage() {
             {
               icon: Clock,
               label: "Duration",
-              value: fmt(r.timing?.total_time_seconds ?? null),
+              value:
+                elapsedSecs !== null
+                  ? fmt(elapsedSecs, true)
+                  : fmt(r.timing?.total_time_seconds ?? null),
             },
             {
               icon: Zap,
@@ -259,7 +303,17 @@ export default function RunPage() {
             {
               icon: RefreshCw,
               label: "Iterations / Commits",
-              value: `${r.iterations_used ?? "—"} / ${r.total_commits ?? "—"}`,
+              value: `${r.iterations_used ?? r.iterations_run ?? "—"} / ${r.total_commits ?? "—"}`,
+            },
+            {
+              icon: Hash,
+              label: "Failures Found",
+              value: r.total_failures_detected ?? "—",
+            },
+            {
+              icon: Layers,
+              label: "Fixes Applied",
+              value: r.total_fixes_applied ?? "—",
             },
           ].map(({ icon: Icon, label, value }) => (
             <div
@@ -271,14 +325,14 @@ export default function RunPage() {
                 {label}
               </div>
               <p className="text-sm font-medium text-zinc-900 dark:text-white mt-1 truncate">
-                {value}
+                {String(value)}
               </p>
             </div>
           ))}
         </div>
 
         {/* Team row */}
-        <div className="mt-3 flex items-center gap-4 text-xs text-zinc-400 dark:text-zinc-600">
+        <div className="mt-3 flex items-center gap-4 text-xs text-zinc-400 dark:text-zinc-600 flex-wrap">
           <span>
             Team:{" "}
             <span className="text-zinc-600 dark:text-zinc-400">
@@ -295,8 +349,21 @@ export default function RunPage() {
             Mode:{" "}
             <span className="text-zinc-600 dark:text-zinc-400">{r.mode}</span>
           </span>
+          {r.detected_languages && r.detected_languages.length > 0 && (
+            <span className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-zinc-400 dark:text-zinc-600">
+                Languages:
+              </span>
+              {r.detected_languages.slice(0, 5).map((lang) => (
+                <LanguageBadge key={lang} language={lang} size="sm" />
+              ))}
+            </span>
+          )}
         </div>
       </div>
+
+      {/* Agent pipeline visualization */}
+      <AgentPipeline runStatus={r.final_status} logLines={logLines} />
 
       {/* Live log stream */}
       <LogStream lines={logLines} running={running} />
@@ -399,6 +466,11 @@ export default function RunPage() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Agent tool errors / warnings */}
+      {r.agent_errors && r.agent_errors.length > 0 && (
+        <AgentErrorsPanel errors={r.agent_errors} />
       )}
     </div>
   );
