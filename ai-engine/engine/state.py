@@ -10,35 +10,58 @@ import operator
 # ── Enums ─────────────────────────────────────────────────
 
 class BugType(str, Enum):
-    LINTING = "LINTING"
-    SYNTAX = "SYNTAX"
-    LOGIC = "LOGIC"
-    TYPE_ERROR = "TYPE_ERROR"
-    IMPORT = "IMPORT"
-    INDENTATION = "INDENTATION"
-    UNKNOWN = "UNKNOWN"
+    LINTING      = "LINTING"
+    SYNTAX       = "SYNTAX"
+    LOGIC        = "LOGIC"
+    TYPE_ERROR   = "TYPE_ERROR"
+    IMPORT       = "IMPORT"
+    INDENTATION  = "INDENTATION"
+    COMPILATION  = "COMPILATION"   # build / compile error
+    RUNTIME      = "RUNTIME"       # runtime / test-execution error
+    DEPENDENCY   = "DEPENDENCY"    # missing module / gem / package
+    SECURITY     = "SECURITY"      # security lint (e.g. bandit, eslint-security)
+    FORMATTING   = "FORMATTING"    # style / formatting (gofmt, rustfmt, black)
+    UNKNOWN      = "UNKNOWN"
 
 
 class FixStatus(str, Enum):
-    FIXED = "FIXED"
-    FAILED = "FAILED"
+    FIXED   = "FIXED"
+    FAILED  = "FAILED"
     SKIPPED = "SKIPPED"
 
 
 class RunStatus(str, Enum):
-    RUNNING = "RUNNING"
-    PASSED = "PASSED"
-    FAILED = "FAILED"
+    RUNNING   = "RUNNING"
+    PASSED    = "PASSED"
+    FAILED    = "FAILED"
+    NO_ISSUES = "NO_ISSUES"   # repo analysed but nothing to fix/heal
 
 
 class Language(str, Enum):
-    PYTHON = "python"
+    # Tier-1 — full static + test + fix support
+    PYTHON     = "python"
     JAVASCRIPT = "javascript"
     TYPESCRIPT = "typescript"
-    GO = "go"
-    JAVA = "java"
-    RUBY = "ruby"
-    UNKNOWN = "unknown"
+    GO         = "go"
+    JAVA       = "java"
+    RUBY       = "ruby"
+    RUST       = "rust"
+    CSHARP     = "csharp"
+    # Tier-2 — static analysis + LLM fix (no integrated test runner)
+    C          = "c"
+    CPP        = "cpp"
+    PHP        = "php"
+    SWIFT      = "swift"
+    KOTLIN     = "kotlin"
+    SCALA      = "scala"
+    SHELL      = "shell"
+    R          = "r"
+    DART       = "dart"
+    LUA        = "lua"
+    ELIXIR     = "elixir"
+    HASKELL    = "haskell"
+    # Fallback
+    UNKNOWN    = "unknown"
 
 
 # ── Sub-dataclasses ───────────────────────────────────────
@@ -139,10 +162,19 @@ class AgentState(TypedDict):
 
     # ── Agent findings (appended by each node) ────────────
     # Annotated with operator.add so LangGraph merges lists across nodes
-    failures: Annotated[list[Failure], operator.add]
-    fixes: Annotated[list[Fix], operator.add]
-    ci_runs: Annotated[list[CiRun], operator.add]
-    commits: Annotated[list[str], operator.add]   # commit SHAs
+    failures: Annotated[list[Failure], operator.add]   # cumulative history
+    fixes:    Annotated[list[Fix],     operator.add]   # cumulative history
+    ci_runs:  Annotated[list[CiRun],   operator.add]
+    commits:  Annotated[list[str],     operator.add]   # commit SHAs
+
+    # ── Per-iteration state (overwritten each iteration, NOT accumulated) ─
+    # These hold only the CURRENT iteration's findings so nodes don't
+    # re-process already-fixed issues from previous iterations.
+    current_iteration_failures: list[Failure]   # set by failure_classifier
+    current_iteration_fixes:    list[Fix]        # set by fix_generator + patch_applier
+
+    # ── Agent-level errors (tool failures, infra errors — not code bugs) ─
+    agent_errors: Annotated[list[str], operator.add]
 
     # ── Iteration control ─────────────────────────────────
     current_iteration: int
@@ -158,6 +190,13 @@ class AgentState(TypedDict):
 
     # ── Score ─────────────────────────────────────────────
     score: Optional[ScoreCard]
+
+    # ── Skip / no-op reason ──────────────────────────────────
+    # Set by nodes when they cannot act (unsupported language,
+    # no failures found, tooling unavailable, etc.).
+    # finalize() promotes final_status → NO_ISSUES when this is set
+    # and no fixes were applied.
+    skip_reason: Optional[str]
 
     # ── Observer callback (not serialized) ────────────────
     # Lets backend receive real-time node events for SSE streaming
@@ -220,9 +259,17 @@ def build_initial_state(
         ci_runs=[],
         commits=[],
 
+        # Per-iteration (reset each loop)
+        current_iteration_failures=[],
+        current_iteration_fixes=[],
+
+        # Agent-level errors
+        agent_errors=[],
+
         # Control
-        current_iteration=0,
+        current_iteration=1,
         final_status=None,
+        skip_reason=None,
 
         # Git
         pr_url=None,
