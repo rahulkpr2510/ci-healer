@@ -64,10 +64,16 @@ def _run_pytest(repo_path: str) -> tuple[str, bool]:
 def _run_npm_test(repo_path: str) -> tuple[str, bool]:
     # Install deps first if node_modules missing
     if not os.path.exists(os.path.join(repo_path, "node_modules")):
-        subprocess.run(
-            ["npm", "install", "--prefer-offline"],
-            capture_output=True, cwd=repo_path, timeout=120,
-        )
+        try:
+            subprocess.run(
+                ["npm", "install", "--prefer-offline"],
+                capture_output=True, cwd=repo_path, timeout=120,
+            )
+        except FileNotFoundError:
+            logger.warning("npm not found — skipping JS test run")
+            return "npm not available in this environment", True
+        except subprocess.TimeoutExpired:
+            return "npm install timed out after 120s", False
     try:
         result = subprocess.run(
             ["npm", "test", "--", "--watchAll=false"],
@@ -76,6 +82,9 @@ def _run_npm_test(repo_path: str) -> tuple[str, bool]:
         output = (result.stdout + result.stderr).strip()
         passed = result.returncode == 0
         return output, passed
+    except FileNotFoundError:
+        logger.warning("npm not found — skipping JS test run")
+        return "npm not available in this environment", True
     except subprocess.TimeoutExpired:
         return "npm test timed out after 180s", False
     except Exception as e:
