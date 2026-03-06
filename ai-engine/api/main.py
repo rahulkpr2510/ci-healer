@@ -62,6 +62,16 @@ _NODE_KEY_MAP: dict[str, str] = {
 }
 
 
+def _dedup_append(events_list: list, entry: dict) -> None:
+    """Append to events_list only if no recent entry has identical text (prevents dual-emit duplicates)."""
+    text = entry.get("text", "")
+    if text:
+        for ev in events_list[-6:]:
+            if ev.get("text", "") == text:
+                return
+    events_list.append(entry)
+
+
 def _make_observer(run_id: str, loop: asyncio.AbstractEventLoop):
     """
     Returns a callable observer that translates raw node events
@@ -171,7 +181,7 @@ def _make_observer(run_id: str, loop: asyncio.AbstractEventLoop):
             if tool_errors:
                 for err in tool_errors:
                     events_list = _run_events.setdefault(run_id, [])
-                    events_list.append({"type": "log", "level": "warn", "text": f"  ⚠️  {err}"})
+                    _dedup_append(events_list, {"type": "log", "level": "warn", "text": f"  ⚠️  {err}"})
 
         if msg:
             events = _run_events.setdefault(run_id, [])
@@ -182,7 +192,7 @@ def _make_observer(run_id: str, loop: asyncio.AbstractEventLoop):
             entry: dict = {"type": event_type, "level": level, "text": msg}
             if pipeline_key:
                 entry["node"] = pipeline_key
-            events.append(entry)
+            _dedup_append(events, entry)
 
         # Wake up any SSE stream consumers waiting for new events (thread-safe)
         if msg or tool_errors:
@@ -266,7 +276,7 @@ async def run_engine(request: EngineRunRequest):
     sig.set()  # wake up any SSE consumer already waiting
     observer = _make_observer(run_id, loop)
 
-    logger.info("Engine run requested: repo=%s team=%s run_id=%s", request.repo_url, request.team_name, run_id)
+    logger.info("Engine run requested: repo=%s run_id=%s", request.repo_url, run_id)
 
     loop = asyncio.get_event_loop()
     executor = ThreadPoolExecutor(max_workers=1)
@@ -276,8 +286,7 @@ async def run_engine(request: EngineRunRequest):
             executor,
             lambda: run_agent(
                 repo_url=request.repo_url,
-                team_name=request.team_name,
-                team_leader=request.team_leader,
+                branch_prefix=request.branch_prefix,
                 github_token=request.github_token,
                 max_iterations=request.max_iterations,
                 read_only=request.read_only,
@@ -347,14 +356,6 @@ async def run_engine(request: EngineRunRequest):
                 pass
 
     agent_errors = final_state.get("agent_errors", [])
-
-    # Emit any accumulated agent errors as warning log lines so they appear in the
-    # frontend log stream even if the observer didn't catch them during the run.
-    if agent_errors:
-        _run_events.setdefault(run_id, []).extend([
-            {"type": "log", "level": "warn", "text": f"  ⚠️  {err}"}
-            for err in agent_errors
-        ])
 
     # Mark run complete and wake up SSE consumers (after all events are appended)
     _run_done[run_id] = True
