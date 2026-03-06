@@ -129,23 +129,24 @@ llm = get_llm()
 
 
 # ── Branch name formatter ─────────────────────────────────
-# PS requirement: TEAM_NAME_LEADER_NAME_AI_Fix  (all caps, underscores)
+# Default format: CI_HEALER_AI_FIX_<N> where N is the run count
+# If branch_prefix is provided: <PREFIX>_AI_FIX_<N>
 
-def format_branch_name(team_name: str, leader_name: str) -> str:
+def format_branch_name(branch_prefix: str = "", run_count: int = 1) -> str:
     """
     Examples:
-      "Slytherin", "Rahul Kapoor"  → SLYTHERIN_RAHUL_KAPOOR_AI_Fix
-      "Code Warriors", "John Doe"  → CODE_WARRIORS_JOHN_DOE_AI_Fix
+      ""            → CI_HEALER_AI_FIX_1
+      "MyTeam"      → MYTEAM_AI_FIX_1
+      "Code Fix"    → CODE_FIX_AI_FIX_3
     """
     def sanitize(s: str) -> str:
         s = s.upper().strip()
         s = re.sub(r"[^A-Z0-9\s]", "", s)   # remove special chars
         s = re.sub(r"\s+", "_", s)           # spaces → underscores
-        return s
+        return s.strip("_")
 
-    team = sanitize(team_name)
-    leader = sanitize(leader_name)
-    return f"{team}_{leader}_AI_Fix"
+    prefix = sanitize(branch_prefix) if branch_prefix else "CI_HEALER"
+    return f"{prefix}_AI_FIX_{run_count}"
 
 
 # ── Commit message builder ────────────────────────────────
