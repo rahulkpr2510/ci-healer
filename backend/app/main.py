@@ -143,16 +143,48 @@ async def _wake_ai_engine() -> None:
         logger.warning("AI engine wake-up ping failed (will retry on first use): %s", exc)
 
 
+# ── Active-run counter ────────────────────────────────────
+# Incremented while a run is in progress so keep-alive pings are skipped
+# and the AI engine gets maximum capacity for real work.
+_active_run_count: int = 0
+
+
+def increment_active_runs() -> None:
+    global _active_run_count
+    _active_run_count += 1
+
+
+def decrement_active_runs() -> None:
+    global _active_run_count
+    _active_run_count = max(0, _active_run_count - 1)
+
+
+def has_active_runs() -> bool:
+    return _active_run_count > 0
+
+
 async def _ai_engine_keepalive_loop() -> None:
     """Periodically ping the AI engine /health endpoint for the entire
-    lifetime of the backend process, preventing Render from idling it."""
-    interval = settings.AI_ENGINE_KEEPALIVE_INTERVAL
+    lifetime of the backend process, preventing Render from idling it.
+
+    Skips the ping entirely when one or more agent runs are in progress so
+    the AI engine is not interrupted by housekeeping traffic during real work.
+    Uses a 10-minute interval — safely below Render's 15-minute idle timeout
+    while being conservative about request volume.
+    """
+    interval = settings.AI_ENGINE_KEEPALIVE_INTERVAL  # default 600 s
     logger.info(
         "AI engine keep-alive started (interval: %ds, target: %s)",
         interval, settings.AI_ENGINE_URL,
     )
     while True:
         await asyncio.sleep(interval)
+        if has_active_runs():
+            logger.debug(
+                "AI engine keep-alive skipped — %d active run(s) in progress",
+                _active_run_count,
+            )
+            continue
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(f"{settings.AI_ENGINE_URL}/health")
