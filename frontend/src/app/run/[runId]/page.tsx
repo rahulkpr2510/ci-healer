@@ -8,12 +8,10 @@ import {
   ArrowLeft,
   GitBranch,
   Clock,
-  Zap,
   ExternalLink,
   RefreshCw,
   Hash,
   Layers,
-  AlertTriangle,
 } from "lucide-react";
 
 import { getRun, streamRun } from "@/lib/api";
@@ -48,6 +46,9 @@ export default function RunPage() {
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Tracks whether the current useEffect invocation has been superseded (handles
+  // React 18 Strict Mode double-invoke and genuine re-mounts).
+  const cancelledRef = useRef(false);
   const running = activeRun?.final_status === "RUNNING" || runLoading;
 
   // Live elapsed timer — counts up from started_at while run is RUNNING
@@ -81,8 +82,19 @@ export default function RunPage() {
     }
   }, []);
 
-  const boot = useCallback(async () => {
+  useEffect(() => {
     if (!runId) return;
+
+    // Cancel the previous invocation (React 18 Strict Mode double-invoke guard).
+    // We close the old SSE and mark anything still in-flight as stale so its
+    // callbacks never touch state.
+    cancelledRef.current = true;
+    esRef.current?.close();
+    esRef.current = null;
+    stopPolling();
+
+    // Arm a fresh cancellation token for this invocation.
+    cancelledRef.current = false;
 
     resetRun();
     clearLogs();
@@ -90,109 +102,148 @@ export default function RunPage() {
     setRunError(null);
     setActiveRunId(runId);
 
-    try {
-      const run = await getRun(runId);
-      setActiveRun(run);
+    (async () => {
+      try {
+        const run = await getRun(runId);
+        if (cancelledRef.current) return;
+        setActiveRun(run);
 
-      if (run.final_status === "RUNNING") {
-        // SSE for live events
-        esRef.current = streamRun(
-          runId,
-          (e: SSEEvent) => {
-            appendLog(e);
-            if (e.type === "complete" || e.type === "error") {
-              stopPolling();
+        if (run.final_status === "RUNNING") {
+          // SSE for live events
+          esRef.current = streamRun(
+            runId,
+            (e: SSEEvent) => {
+              if (cancelledRef.current) return;
+              appendLog(e);
+              if (e.type === "complete" || e.type === "error") {
+                stopPolling();
+                getRun(runId)
+                  .then((updated) => {
+                    if (!cancelledRef.current) setActiveRun(updated);
+                  })
+                  .catch(() => null);
+              }
+            },
+            () => {
+              // SSE closed — do a final DB refresh
+              if (cancelledRef.current) return;
               getRun(runId)
-                .then((updated) => {
-                  setActiveRun(updated);
+                .then((r) => {
+                  if (!cancelledRef.current) setActiveRun(r);
                 })
                 .catch(() => null);
-            }
-          },
-          () => {
-            // SSE closed — do a final DB refresh
-            getRun(runId)
-              .then(setActiveRun)
-              .catch(() => null);
-          },
-        );
+            },
+          );
 
-        // Polling fallback: every 5 s refresh run status from DB.
-        // Ensures status never stays stuck as RUNNING if SSE drops.
-        stopPolling();
-        pollRef.current = setInterval(async () => {
-          try {
-            const updated = await getRun(runId);
-            setActiveRun(updated);
-            if (updated.final_status !== "RUNNING") {
+          // Polling fallback: every 5 s refresh run status from DB.
+          stopPolling();
+          pollRef.current = setInterval(async () => {
+            if (cancelledRef.current) {
               stopPolling();
+              return;
             }
-          } catch {
-            // ignore transient errors
+            try {
+              const updated = await getRun(runId);
+              if (!cancelledRef.current) {
+                setActiveRun(updated);
+                if (updated.final_status !== "RUNNING") stopPolling();
+              }
+            } catch {
+              // ignore transient errors
+            }
+          }, 5000);
+        } else {
+          // run already finished — build logs from stored data
+          const syntheticLogs: SSEEvent[] = [];
+
+          // Preamble — start + language
+          syntheticLogs.push({
+            type: "AGENT_STARTED",
+            repo_url: run.repo_url,
+          });
+          if (run.primary_language) {
+            syntheticLogs.push({
+              type: "log",
+              level: "success",
+              text: `  Language: ${run.primary_language}${run.detected_languages?.length ? `  (${run.detected_languages.join(", ")})` : ""}`,
+            });
           }
-        }, 5000);
-      } else {
-        // run already finished — build logs from stored data
-        const syntheticLogs: SSEEvent[] = [];
 
-        run.ci_timeline?.forEach((ev) => {
-          syntheticLogs.push({
-            type: "log",
-            level:
-              ev.status === "PASSED"
-                ? "success"
-                : ev.status === "FAILED"
-                  ? "error"
-                  : "info",
-            text: `[Iteration ${ev.iteration}] ${ev.iteration_label} → ${ev.status}`,
+          run.ci_timeline?.forEach((ev) => {
+            syntheticLogs.push({
+              type: "log",
+              level:
+                ev.status === "PASSED"
+                  ? "success"
+                  : ev.status === "FAILED"
+                    ? "error"
+                    : "info",
+              text: `[Iteration ${ev.iteration}] ${ev.iteration_label} → ${ev.status}`,
+            });
           });
-        });
 
-        run.fixes?.forEach((f) => {
-          syntheticLogs.push({
-            type: "log",
-            level:
-              f.status === "FIXED"
-                ? "success"
-                : f.status === "FAILED"
-                  ? "error"
-                  : "warning",
-            text: `${f.status}  ${f.bug_type}  ${f.file}${f.line_number ? `:${f.line_number}` : ""}  — ${f.commit_message}`,
+          run.fixes?.forEach((f) => {
+            syntheticLogs.push({
+              type: "log",
+              level:
+                f.status === "FIXED"
+                  ? "success"
+                  : f.status === "FAILED"
+                    ? "error"
+                    : "warning",
+              text: `${f.status}  ${f.bug_type}  ${f.file}${f.line_number ? `:${f.line_number}` : ""}  — ${f.commit_message}`,
+            });
           });
-        });
 
-        syntheticLogs.push({
-          type: "complete",
-          level: run.final_status === "PASSED" ? "success" : "error",
-          text: `Run ${run.final_status} — score: ${run.score?.final_score ?? 0} pts, fixes: ${run.total_fixes_applied}`,
-        });
+          // Agent-level tool errors (e.g. linter not found)
+          run.agent_errors?.forEach((err) => {
+            syntheticLogs.push({
+              type: "log",
+              level: "warning",
+              text: `⚠️  ${err}`,
+            });
+          });
 
-        syntheticLogs.forEach(appendLog);
+          // Skip reason for NO_ISSUES runs
+          if (run.final_status === "NO_ISSUES") {
+            syntheticLogs.push({
+              type: "log",
+              level: "info",
+              text: `ℹ️  ${run.skip_reason ?? "No issues to fix — repo is healthy"}`,
+            });
+          }
+
+          syntheticLogs.push({
+            type: "complete",
+            final_status: run.final_status,
+            skip_reason:
+              run.final_status === "NO_ISSUES"
+                ? "No issues found — repo is healthy"
+                : undefined,
+            level:
+              run.final_status === "PASSED" || run.final_status === "NO_ISSUES"
+                ? "success"
+                : "error",
+            text: `Run ${run.final_status}  ·  fixes: ${run.total_fixes_applied ?? 0}`,
+          });
+
+          if (!cancelledRef.current) syntheticLogs.forEach(appendLog);
+        }
+      } catch (e) {
+        if (!cancelledRef.current) setRunError((e as Error).message);
+      } finally {
+        if (!cancelledRef.current) setRunLoading(false);
       }
-    } catch (e) {
-      setRunError((e as Error).message);
-    } finally {
-      setRunLoading(false);
-    }
-  }, [
-    runId,
-    resetRun,
-    clearLogs,
-    setRunLoading,
-    setRunError,
-    setActiveRunId,
-    setActiveRun,
-    appendLog,
-    stopPolling,
-  ]);
+    })();
 
-  useEffect(() => {
-    boot();
     return () => {
+      cancelledRef.current = true;
       esRef.current?.close();
+      esRef.current = null;
       stopPolling();
     };
-  }, [boot, stopPolling]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId]); // Zustand actions are stable refs — only runId causes a true re-run
 
   function fmt(secs: number | null, live = false) {
     if (secs == null) return "—";
@@ -234,7 +285,7 @@ export default function RunPage() {
   const r = activeRun;
 
   return (
-    <div className="space-y-5 max-w-4xl">
+    <div className="space-y-5 max-w-full">
       {/* Back */}
       <button
         onClick={() => router.push("/dashboard")}
@@ -293,14 +344,6 @@ export default function RunPage() {
                   : fmt(r.timing?.total_time_seconds ?? null),
             },
             {
-              icon: Zap,
-              label: "Score",
-              value:
-                r.score?.final_score != null
-                  ? `${r.score.final_score} pts`
-                  : "—",
-            },
-            {
               icon: RefreshCw,
               label: "Iterations / Commits",
               value: `${r.iterations_used ?? r.iterations_run ?? "—"} / ${r.total_commits ?? "—"}`,
@@ -331,35 +374,22 @@ export default function RunPage() {
           ))}
         </div>
 
-        {/* Team row */}
-        <div className="mt-3 flex items-center gap-4 text-xs text-zinc-400 dark:text-zinc-600 flex-wrap">
-          <span>
-            Team:{" "}
-            <span className="text-zinc-600 dark:text-zinc-400">
-              {r.team_name}
+        {/* Language row */}
+        {r.detected_languages && r.detected_languages.length > 0 && (
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-zinc-500 dark:text-zinc-600">
+              Languages:
             </span>
-          </span>
-          <span>
-            Leader:{" "}
-            <span className="text-zinc-600 dark:text-zinc-400">
-              {r.team_leader}
-            </span>
-          </span>
-          <span>
-            Mode:{" "}
-            <span className="text-zinc-600 dark:text-zinc-400">{r.mode}</span>
-          </span>
-          {r.detected_languages && r.detected_languages.length > 0 && (
-            <span className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-zinc-400 dark:text-zinc-600">
-                Languages:
+            {r.detected_languages.slice(0, 5).map((lang) => (
+              <LanguageBadge key={lang} language={lang} size="sm" />
+            ))}
+            {r.mode && (
+              <span className="ml-2 text-xs text-zinc-500">
+                Mode: <span className="text-zinc-400">{r.mode}</span>
               </span>
-              {r.detected_languages.slice(0, 5).map((lang) => (
-                <LanguageBadge key={lang} language={lang} size="sm" />
-              ))}
-            </span>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Agent pipeline visualization */}
@@ -394,74 +424,6 @@ export default function RunPage() {
                     {new Date(ev.ran_at).toLocaleTimeString()}
                   </span>
                 )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Score breakdown */}
-      {r.score && (
-        <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5">
-          <h3 className="text-sm font-semibold text-zinc-900 dark:text-white mb-4">
-            Score Breakdown
-          </h3>
-
-          {/* Score Progress Bar */}
-          <div className="mb-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-zinc-500 dark:text-zinc-500">
-                Final Score
-              </span>
-              <span className="text-2xl font-bold text-zinc-900 dark:text-white">
-                {r.score.final_score}
-                <span className="text-sm text-zinc-400 dark:text-zinc-500 font-normal ml-1">
-                  / 110
-                </span>
-              </span>
-            </div>
-            <div className="h-3 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all duration-700 ease-out ${
-                  r.score.final_score >= 100
-                    ? "bg-emerald-500"
-                    : r.score.final_score >= 70
-                      ? "bg-amber-500"
-                      : "bg-red-500"
-                }`}
-                style={{
-                  width: `${Math.min(100, (r.score.final_score / 110) * 100)}%`,
-                }}
-              />
-            </div>
-            <div className="flex justify-between mt-1 text-xs text-zinc-400 dark:text-zinc-600">
-              <span>0</span>
-              <span>50</span>
-              <span>100</span>
-              <span>110</span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {[
-              { label: "Base Score", value: r.score.base_score },
-              { label: "Speed Bonus", value: `+${r.score.speed_bonus}` },
-              {
-                label: "Efficiency Penalty",
-                value: `-${r.score.efficiency_penalty}`,
-              },
-              { label: "Final Score", value: r.score.final_score },
-            ].map(({ label, value }) => (
-              <div
-                key={label}
-                className="bg-zinc-50 dark:bg-zinc-800/40 rounded-lg px-3 py-2.5"
-              >
-                <p className="text-xs text-zinc-500 dark:text-zinc-500">
-                  {label}
-                </p>
-                <p className="text-lg font-bold text-zinc-900 dark:text-white mt-0.5">
-                  {value}
-                </p>
               </div>
             ))}
           </div>
