@@ -7,8 +7,7 @@ from typing import Optional
 class EngineRunRequest(BaseModel):
     run_id: Optional[str] = None   # backend passes its own UUID for log correlation
     repo_url: str
-    team_name:      str = Field(..., min_length=1, max_length=100)
-    team_leader:    str = Field(..., min_length=1, max_length=100)
+    branch_prefix: str = Field("", max_length=50, description="Optional prefix for the fix branch")
     github_token: Optional[str] = None
     max_iterations: int = Field(5, ge=1, le=10)
     read_only: bool = False
