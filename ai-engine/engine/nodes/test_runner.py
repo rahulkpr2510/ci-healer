@@ -1,6 +1,7 @@
 # ai-engine/engine/nodes/test_runner.py
 
 import os
+import shutil
 import subprocess
 import logging
 
@@ -155,40 +156,65 @@ def _run_npm_test(repo_path: str) -> tuple[str, bool, list[str]]:
         msg = "No package.json found — cannot run JS/TS tests"
         return msg, True, []   # not a hard failure
 
-    # Ensure node_modules
+    # Ensure node_modules — prefer bun (fast), fallback to npm
     if not os.path.exists(os.path.join(repo_path, "node_modules")):
+        if shutil.which("bun"):
+            install_cmd = ["bun", "install"]
+        else:
+            install_cmd = ["npm", "install", "--prefer-offline", "--no-audit", "--no-fund"]
         try:
             subprocess.run(
-                ["npm", "install", "--prefer-offline", "--no-audit", "--no-fund"],
+                install_cmd,
                 capture_output=True, cwd=repo_path, timeout=180,
             )
         except FileNotFoundError:
-            msg = "npm not found in PATH — cannot run JS/TS tests"
+            msg = f"{install_cmd[0]} not found in PATH — cannot run JS/TS tests"
             return msg, True, [msg]
         except subprocess.TimeoutExpired:
-            msg = "npm install timed out after 180s — tests skipped"
+            msg = f"{install_cmd[0]} install timed out after 180s — tests skipped"
             return msg, False, [msg]
 
-    # Detect test script
+    # Detect test script / framework
     import json as _json
     test_cmd: list[str] | None = None
+    has_test_framework = False
     try:
         with open(os.path.join(repo_path, "package.json"), encoding="utf-8") as fh:
             pkg = _json.load(fh)
         scripts = pkg.get("scripts", {})
+        all_deps = {
+            **pkg.get("dependencies", {}),
+            **pkg.get("devDependencies", {}),
+        }
+
+        # Determine whether a test framework is actually installed
+        _framework_keys = {"jest", "vitest", "mocha", "jasmine", "@jest/core", "ava", "tap"}
+        _config_files = [
+            "jest.config.js", "jest.config.ts", "jest.config.mjs",
+            "vitest.config.ts", "vitest.config.js", "vitest.config.mjs",
+        ]
+        has_test_framework = bool(_framework_keys & set(all_deps)) or any(
+            os.path.exists(os.path.join(repo_path, cfg)) for cfg in _config_files
+        )
+
         if "test" in scripts:
             test_cmd = ["npm", "test", "--", "--watchAll=false", "--passWithNoTests"]
         elif "jest" in scripts or os.path.exists(os.path.join(repo_path, "jest.config.js")):
             test_cmd = ["npx", "jest", "--watchAll=false", "--passWithNoTests"]
         elif "vitest" in scripts:
-            test_cmd = ["npx", "vitest", "run"]
+            test_cmd = ["npx", "vitest", "run", "--passWithNoTests"]
         elif "mocha" in scripts:
             test_cmd = ["npx", "mocha", "--exit"]
     except Exception:
         pass
 
     if not test_cmd:
-        # Default — try jest directly
+        if not has_test_framework:
+            # No test framework installed — skip gracefully instead of timing out on npx download
+            msg = "No test framework found in dependencies — skipping JS/TS tests"
+            logger.info(msg)
+            return msg, True, []
+        # Framework present in deps but no known script — try jest
         test_cmd = ["npx", "jest", "--watchAll=false", "--passWithNoTests"]
 
     try:
