@@ -135,8 +135,7 @@ class AgentState(TypedDict):
 
     # ── Run inputs (set once at start) ────────────────────
     repo_url: str
-    team_name: str
-    team_leader: str
+    branch_prefix: str          # optional prefix for fix branch name
     github_token: Optional[str]
     max_iterations: int
     read_only: bool
@@ -145,7 +144,7 @@ class AgentState(TypedDict):
     repo_local_path: Optional[str]          # abs path to cloned repo on disk
     repo_owner: Optional[str]
     repo_name: Optional[str]
-    branch_name: Optional[str]              # TEAM_NAME_LEADER_NAME_AI_Fix
+    branch_name: Optional[str]              # CI_HEALER_AI_FIX_N or PREFIX_AI_FIX_N
     default_branch: Optional[str]           # main / master
 
     # ── Language + structure (set by language_detector) ───
@@ -215,8 +214,7 @@ def get_total_fixes_applied(state: AgentState) -> int:
 
 def build_initial_state(
     repo_url: str,
-    team_name: str,
-    team_leader: str,
+    branch_prefix: str = "",
     github_token: Optional[str] = None,
     max_iterations: int = 5,
     read_only: bool = False,
@@ -228,8 +226,7 @@ def build_initial_state(
     return AgentState(
         # Inputs
         repo_url=repo_url,
-        team_name=team_name,
-        team_leader=team_leader,
+        branch_prefix=branch_prefix,
         github_token=github_token,
         max_iterations=max_iterations,
         read_only=read_only,
