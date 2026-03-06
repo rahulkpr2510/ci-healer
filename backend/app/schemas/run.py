@@ -52,8 +52,7 @@ class CiEventSchema(BaseModel):
 
 class RunRequest(BaseModel):
     repo_url:       str
-    team_name:      str   = Field(..., min_length=1, max_length=100,  description="Team name")
-    team_leader:    str   = Field(..., min_length=1, max_length=100,  description="GitHub username")
+    branch_prefix:  str   = Field("", max_length=50, description="Optional branch name prefix (e.g. 'MyTeam'). Used to build branch: <prefix>_AI_Fix_N")
     max_iterations: int   = Field(5, ge=1, le=10, description="Max fix iterations (1–10)")
     read_only:      bool  = False
 
@@ -91,6 +90,7 @@ class RunDetailResponse(BaseModel):
     detected_languages:      list[str]            = []
     agent_errors:            list[str]            = []
     iterations_run:          int                  = 0
+    skip_reason:             Optional[str]        = None
 
 
 # ── Run summary (used in lists) ─────────────────────────────────────────────
