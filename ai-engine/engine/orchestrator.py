@@ -160,8 +160,7 @@ def get_compiled_graph():
 
 def run_agent(
     repo_url: str,
-    team_name: str,
-    team_leader: str,
+    branch_prefix: str = "",
     github_token: str | None = None,
     max_iterations: int = 5,
     read_only: bool = False,
@@ -172,14 +171,13 @@ def run_agent(
     Returns the final AgentState after the graph completes.
     """
     logger.info(
-        "Starting agent run: repo=%s team=%s leader=%s read_only=%s",
-        repo_url, team_name, team_leader, read_only,
+        "Starting agent run: repo=%s branch_prefix=%s read_only=%s",
+        repo_url, branch_prefix, read_only,
     )
 
     initial_state = build_initial_state(
         repo_url=repo_url,
-        team_name=team_name,
-        team_leader=team_leader,
+        branch_prefix=branch_prefix,
         github_token=github_token,
         max_iterations=max_iterations,
         read_only=read_only,
