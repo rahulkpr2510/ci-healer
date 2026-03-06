@@ -143,7 +143,7 @@ function formatEvent(e: SSEEvent): {
         const isNoIssues = e.final_status === "NO_ISSUES";
         text = isNoIssues
           ? (e.skip_reason ?? "No issues found — repo is healthy")
-          : `Run ${e.final_status ?? "finished"}  ·  ${e.fixes_applied ?? 0} fix(es) applied`;
+          : `Run ${e.final_status ?? "finished"}  ·  ${e.fixes_count ?? 0} fix(es) applied`;
         break;
       }
       default:
