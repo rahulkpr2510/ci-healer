@@ -60,8 +60,9 @@ export interface Run {
   repo_owner: string;
   repo_name: string;
 
-  team_name: string;
-  team_leader: string;
+  // Legacy fields (kept for backward compatibility with existing runs in DB)
+  team_name?: string;
+  team_leader?: string;
 
   mode: string;
 
@@ -75,7 +76,7 @@ export interface Run {
   total_commits: number;
   iterations_used: number;
 
-  score: ScoreBreakdown;
+  score?: ScoreBreakdown;
   timing: RunTiming;
 
   fixes: Fix[];
@@ -86,6 +87,7 @@ export interface Run {
   detected_languages?: string[];
   agent_errors?: string[];
   iterations_run?: number;
+  skip_reason?: string | null;
 
   created_at: string;
 }
@@ -100,7 +102,8 @@ export interface RunSummary {
   final_status: RunStatus;
 
   total_fixes_applied: number;
-  final_score: number;
+  total_failures_detected?: number;
+  final_score?: number | null;
 
   total_time_seconds: number | null;
   started_at: string | null;
@@ -157,8 +160,7 @@ export interface RunHistory {
 
 export interface RunRequest {
   repo_url: string;
-  team_name: string;
-  team_leader: string;
+  branch_prefix?: string;
   max_iterations?: number;
   read_only?: boolean;
 }
