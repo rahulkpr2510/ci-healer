@@ -72,8 +72,7 @@ def finalize(state: AgentState) -> dict:
     results = {
         "run_summary": {
             "repo_url":               state["repo_url"],
-            "team_name":              state["team_name"],
-            "team_leader":            state["team_leader"],
+            "branch_prefix":          state.get("branch_prefix", ""),
             "branch_name":            state.get("branch_name"),
             "primary_language":       state.get("primary_language", "unknown"),
             "detected_languages":     state.get("detected_languages", []),
