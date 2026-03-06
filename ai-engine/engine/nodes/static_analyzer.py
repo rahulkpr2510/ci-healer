@@ -52,11 +52,10 @@ _ESLINT_FALLBACK_CONFIG_V8 = {
     "rules": _ESLINT_FALLBACK_RULES,
 }
 
-# ESLint flat-config (v9+) variant written as a JS string
+# ESLint flat-config (v9+) variant written as a JS string.
+# Does NOT import @eslint/js so it works without that optional package.
 _ESLINT_FLAT_CONFIG_JS = """\
-import js from "@eslint/js";
 export default [
-  js.configs.recommended,
   {
     rules: {
       "no-unused-vars": "warn",
@@ -64,6 +63,8 @@ export default [
       "no-unreachable": "error",
       "no-duplicate-case": "error",
       "no-dupe-keys": "error",
+      "no-dupe-args": "error",
+      "no-empty": "warn",
       "no-redeclare": "error",
       "use-isnan": "error",
       "valid-typeof": "error",
@@ -237,28 +238,33 @@ _ESLINT_CONFIG_FILES = [
 
 
 def _npm_ensure_deps(repo_path: str) -> list[str]:
-    """Install node_modules if missing. Returns list of error strings."""
+    """Install node_modules if missing. Uses bun if available, falls back to npm."""
     errors: list[str] = []
     if not os.path.exists(os.path.join(repo_path, "node_modules")):
         pkg_json = os.path.join(repo_path, "package.json")
         if os.path.exists(pkg_json):
-            logger.info("Running npm install in %s", repo_path)
+            if shutil.which("bun"):
+                install_cmd = ["bun", "install"]
+            else:
+                install_cmd = ["npm", "install", "--prefer-offline", "--no-audit", "--no-fund"]
+            mgr_name = install_cmd[0]
+            logger.info("Running %s install in %s", mgr_name, repo_path)
             try:
                 result = subprocess.run(
-                    ["npm", "install", "--prefer-offline", "--no-audit", "--no-fund"],
+                    install_cmd,
                     capture_output=True, text=True, timeout=180, cwd=repo_path,
                 )
                 if result.returncode != 0:
                     errors.append(
-                        f"npm install failed (exit {result.returncode}): "
+                        f"{mgr_name} install failed (exit {result.returncode}): "
                         f"{result.stderr.strip()[:400]}"
                     )
             except FileNotFoundError:
                 errors.append(
-                    "npm not found in PATH. Install Node.js to enable JS/TS analysis."
+                    f"{mgr_name} not found in PATH. Install Node.js to enable JS/TS analysis."
                 )
             except subprocess.TimeoutExpired:
-                errors.append("npm install timed out after 180 s")
+                errors.append(f"{mgr_name} install timed out after 180 s")
         else:
             logger.info("No package.json in repo — skipping npm install")
     return errors
@@ -356,7 +362,7 @@ def _run_eslint_with_fallback_config(
     )
 
     try:
-        cmd = ["npx", "eslint", "--format=compact"] + ext_args + ["."]
+        cmd = ["npx", "eslint", "--format=json"] + ext_args + ["."]
         result = subprocess.run(
             cmd,
             capture_output=True, text=True, timeout=120, cwd=repo_path,
@@ -367,12 +373,25 @@ def _run_eslint_with_fallback_config(
         stderr = result.stderr.strip()
 
         if stdout:
-            # Filter out noise lines (progress bars, npm warnings, etc.)
-            for line in stdout.splitlines():
-                if line.strip() and not line.startswith("npm "):
-                    lines.append(line)
+            # Parse JSON output and convert to file:line:col: severity message format
+            try:
+                eslint_results = json.loads(stdout)
+                for file_result in eslint_results:
+                    rel_path = os.path.relpath(file_result.get("filePath", ""), repo_path)
+                    for msg in file_result.get("messages", []):
+                        severity = "error" if msg.get("severity", 1) == 2 else "warning"
+                        line_no  = msg.get("line", 1)
+                        col_no   = msg.get("column", 1)
+                        rule     = msg.get("ruleId") or "eslint"
+                        text     = msg.get("message", "")
+                        lines.append(f"{rel_path}:{line_no}:{col_no}: {severity}: {text} ({rule})")
+            except (json.JSONDecodeError, KeyError, TypeError):
+                # Fallback: emit raw stdout lines if JSON parse fails
+                for line in stdout.splitlines():
+                    if line.strip() and not line.startswith("npm "):
+                        lines.append(line)
 
-        # Non-zero exit with no stdout → ESLint itself errored
+        # Non-zero exit with no stdout → ESLint itself errored (e.g. config error)
         if result.returncode not in (0, 1) and not stdout:
             detail = stderr[:500] if stderr else f"exit code {result.returncode}"
             errors.append(f"ESLint exited with error: {detail}")
