@@ -25,15 +25,18 @@ FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
-# Runtime deps: git, Node.js/npm (for JS/TS repos), optional linters
+# Runtime deps: git, Node.js (for JS/TS repos), bun (fast package manager), optional linters
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     libssl3 \
     libffi8 \
     curl \
+    unzip \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://bun.sh/install | bash \
+    && ln -sf /root/.bun/bin/bun /usr/local/bin/bun
 
 # Copy installed Python packages
 COPY --from=builder /install /usr/local
