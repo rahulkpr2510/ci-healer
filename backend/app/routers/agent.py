@@ -62,8 +62,7 @@ async def start_agent_run(
         db=db,
         user=current_user,
         repo_url=payload.repo_url,
-        team_name=payload.team_name,
-        team_leader=payload.team_leader,
+        branch_prefix=payload.branch_prefix,
         max_iterations=payload.max_iterations,
         read_only=payload.read_only,
     )
@@ -173,6 +172,7 @@ async def get_run_status(
         detected_languages=_extra.get("detected_languages") or [],
         agent_errors=_extra.get("agent_errors") or [],
         iterations_run=_extra.get("iterations_run") or 0,
+        skip_reason=_extra.get("skip_reason"),
     )
 
 
