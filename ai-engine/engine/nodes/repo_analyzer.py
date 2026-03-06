@@ -20,8 +20,7 @@ def repo_analyzer(state: AgentState) -> dict:
     emit(state, "node_start", "repo", iteration=state["current_iteration"])
 
     repo_url = state["repo_url"]
-    team_name = state["team_name"]
-    team_leader = state["team_leader"]
+    branch_prefix = state.get("branch_prefix", "")
     github_token = state.get("github_token")
 
     # ── Build authenticated clone URL ─────────────────────
@@ -72,7 +71,9 @@ def repo_analyzer(state: AgentState) -> dict:
     )
 
     # ── Build fix branch name ─────────────────────────────
-    branch_name = format_branch_name(team_name, team_leader)
+    # Use a short timestamp-based counter for uniqueness without API calls
+    run_seq = int(datetime.now(timezone.utc).strftime("%H%M%S")) % 10000
+    branch_name = format_branch_name(branch_prefix, run_seq)
 
     emit(state, "node_end", "repo",
          source_count=len(source_files),
