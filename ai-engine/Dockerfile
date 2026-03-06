@@ -31,12 +31,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     libffi8 \
     curl \
-    unzip \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://bun.sh/install | bash \
-    && ln -sf /root/.bun/bin/bun /usr/local/bin/bun
+    && npm install -g bun
 
 # Copy installed Python packages
 COPY --from=builder /install /usr/local
