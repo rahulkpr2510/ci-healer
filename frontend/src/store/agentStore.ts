@@ -54,9 +54,25 @@ export const useAgentStore = create<AgentStore>((set) => ({
   setRunError: (runError) => set({ runError }),
 
   appendLog: (e) =>
-    set((s) => ({
-      logLines: [...s.logLines.slice(-199), e], // keep last 200
-    })),
+    set((s) => {
+      // Skip if an identical (type + text) event already exists in the last 20
+      // entries — guards against any double-delivery from dual broadcast paths
+      // or React double-invoke edge cases.
+      const eText = (e as SSEEvent & { text?: string }).text;
+      if (eText) {
+        const recent = s.logLines.slice(-20);
+        if (
+          recent.some(
+            (ev) =>
+              ev.type === e.type &&
+              (ev as SSEEvent & { text?: string }).text === eText,
+          )
+        ) {
+          return {};
+        }
+      }
+      return { logLines: [...s.logLines.slice(-199), e] };
+    }),
   clearLogs: () => set({ logLines: [] }),
 
   resetRun: () =>
