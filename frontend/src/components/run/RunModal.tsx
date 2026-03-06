@@ -4,7 +4,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { X, Play, Loader2 } from "lucide-react";
+import { X, Play, Loader2, GitBranch, Info } from "lucide-react";
 
 import { startRun } from "@/lib/api";
 import type { Repo } from "@/types/agent";
@@ -17,28 +17,28 @@ interface RunModalProps {
 export default function RunModal({ repo, onClose }: RunModalProps) {
   const router = useRouter();
 
-  const [teamName, setTeamName] = useState("");
-  const [teamLeader, setTeamLeader] = useState("");
+  const [branchPrefix, setBranchPrefix] = useState("");
   const [maxIter, setMaxIter] = useState(5);
   const [readonly, setReadonly] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const previewBranch = branchPrefix.trim()
+    ? `${branchPrefix
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "_")}_AI_FIX_N`
+    : "CI_HEALER_AI_FIX_N";
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!teamName.trim() || !teamLeader.trim()) {
-      setError("Team name and team leader are required.");
-      return;
-    }
-
     setLoading(true);
     setError(null);
 
     try {
       const res = await startRun({
         repo_url: repo.html_url,
-        team_name: teamName.trim(),
-        team_leader: teamLeader.trim(),
+        branch_prefix: branchPrefix.trim(),
         max_iterations: maxIter,
         read_only: readonly,
       });
@@ -56,7 +56,7 @@ export default function RunModal({ repo, onClose }: RunModalProps) {
         <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-200 dark:border-zinc-800">
           <div>
             <h2 className="text-sm font-semibold text-zinc-900 dark:text-white">
-              Start a New Run
+              Configure Run
             </h2>
             <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-0.5 font-mono">
               {repo.full_name}
@@ -78,32 +78,29 @@ export default function RunModal({ repo, onClose }: RunModalProps) {
             </div>
           )}
 
+          {/* Branch prefix */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-              Team Name
+              Branch Prefix{" "}
+              <span className="text-zinc-400 dark:text-zinc-600 font-normal">
+                (optional)
+              </span>
             </label>
             <input
               type="text"
-              value={teamName}
-              onChange={(e) => setTeamName(e.target.value)}
-              placeholder="e.g. team-alpha"
-              className="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-600 transition-shadow"
+              value={branchPrefix}
+              onChange={(e) => setBranchPrefix(e.target.value)}
+              placeholder="e.g. MyTeam"
+              maxLength={50}
+              className="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500/50 dark:focus:ring-violet-400/50 transition-shadow"
             />
+            <div className="flex items-center gap-1.5 text-[11px] text-zinc-400 dark:text-zinc-500">
+              <GitBranch size={10} />
+              <span className="font-mono">{previewBranch}</span>
+            </div>
           </div>
 
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-              Team Leader
-            </label>
-            <input
-              type="text"
-              value={teamLeader}
-              onChange={(e) => setTeamLeader(e.target.value)}
-              placeholder="e.g. rahulkpr2510"
-              className="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-600 transition-shadow"
-            />
-          </div>
-
+          {/* Max iterations */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
               Max Iterations
@@ -111,30 +108,51 @@ export default function RunModal({ repo, onClose }: RunModalProps) {
                 (1–10)
               </span>
             </label>
-            <input
-              type="number"
-              min={1}
-              max={10}
-              value={maxIter}
-              onChange={(e) => setMaxIter(Number(e.target.value))}
-              className="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-600 transition-shadow"
-            />
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={1}
+                max={10}
+                value={maxIter}
+                onChange={(e) => setMaxIter(Number(e.target.value))}
+                className="flex-1 accent-violet-500"
+              />
+              <span className="text-sm font-semibold text-zinc-900 dark:text-white w-4 text-right tabular-nums">
+                {maxIter}
+              </span>
+            </div>
+            <p className="text-[11px] text-zinc-400 dark:text-zinc-500">
+              The agent will retry fixing CI failures up to {maxIter} time
+              {maxIter !== 1 ? "s" : ""}.
+            </p>
           </div>
 
-          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+          {/* Read-only */}
+          <label className="flex items-start gap-2.5 cursor-pointer select-none p-3 rounded-lg border border-zinc-100 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
             <input
               type="checkbox"
               checked={readonly}
               onChange={(e) => setReadonly(e.target.checked)}
-              className="w-4 h-4 rounded border-zinc-300 dark:border-zinc-700 accent-zinc-900 dark:accent-white"
+              className="mt-0.5 w-4 h-4 rounded border-zinc-300 dark:border-zinc-700 accent-violet-500"
             />
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">
-              Read-only mode{" "}
-              <span className="text-zinc-400 dark:text-zinc-600">
-                (analyse only, no commits)
+            <div>
+              <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                Read-only mode
               </span>
-            </span>
+              <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-0.5">
+                Analyse and generate fixes but skip commits and PR creation.
+              </p>
+            </div>
           </label>
+
+          {/* Info note */}
+          <div className="flex items-start gap-2 text-[11px] text-zinc-400 dark:text-zinc-500 bg-zinc-50 dark:bg-zinc-800/50 rounded-lg px-3 py-2.5">
+            <Info size={11} className="shrink-0 mt-0.5" />
+            <span>
+              The agent will clone the repo, run static analysis &amp; tests,
+              generate targeted fixes, and open a pull request automatically.
+            </span>
+          </div>
 
           <button
             type="submit"
@@ -146,7 +164,7 @@ export default function RunModal({ repo, onClose }: RunModalProps) {
             ) : (
               <Play size={14} />
             )}
-            {loading ? "Starting…" : "Start Run"}
+            {loading ? "Starting…" : "Start Healing Run"}
           </button>
         </form>
       </div>
