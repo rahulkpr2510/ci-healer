@@ -110,6 +110,25 @@ export default function RunPage() {
 
         if (run.final_status === "RUNNING") {
           // SSE for live events
+          const startPollingFallback = () => {
+            if (pollRef.current) return; // already polling
+            pollRef.current = setInterval(async () => {
+              if (cancelledRef.current) {
+                stopPolling();
+                return;
+              }
+              try {
+                const updated = await getRun(runId);
+                if (!cancelledRef.current) {
+                  setActiveRun(updated);
+                  if (updated.final_status !== "RUNNING") stopPolling();
+                }
+              } catch {
+                // ignore transient errors
+              }
+            }, 30_000);
+          };
+
           esRef.current = streamRun(
             runId,
             (e: SSEEvent) => {
@@ -133,25 +152,11 @@ export default function RunPage() {
                 })
                 .catch(() => null);
             },
+            () => {
+              // SSE error — fall back to polling so UI stays responsive
+              if (!cancelledRef.current) startPollingFallback();
+            },
           );
-
-          // Polling fallback: every 5 s refresh run status from DB.
-          stopPolling();
-          pollRef.current = setInterval(async () => {
-            if (cancelledRef.current) {
-              stopPolling();
-              return;
-            }
-            try {
-              const updated = await getRun(runId);
-              if (!cancelledRef.current) {
-                setActiveRun(updated);
-                if (updated.final_status !== "RUNNING") stopPolling();
-              }
-            } catch {
-              // ignore transient errors
-            }
-          }, 5000);
         } else {
           // run already finished — build logs from stored data
           const syntheticLogs: SSEEvent[] = [];
