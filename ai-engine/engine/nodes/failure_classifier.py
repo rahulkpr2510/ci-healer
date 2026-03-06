@@ -123,8 +123,9 @@ def _parse_dotnet(line: str) -> tuple[str, int] | None:
 
 
 # Ordered list of parsers — first match wins
+# _parse_standard is first so ESLint unix format (file:line:col:) is caught fast;
+# _parse_eslint_compact stays as a fallback for any legacy compact-format lines.
 _PARSERS = [
-    _parse_eslint_compact,
     _parse_tsc,
     _parse_go_vet,
     _parse_cargo,
@@ -132,6 +133,7 @@ _PARSERS = [
     _parse_rubocop,
     _parse_dotnet,
     _parse_standard,
+    _parse_eslint_compact,
 ]
 
 
