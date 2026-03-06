@@ -271,7 +271,7 @@ def _npm_ensure_deps(repo_path: str) -> list[str]:
 
 
 def _detect_eslint_version(repo_path: str) -> int:
-    """Return major ESLint version (8 or 9) available in the repo/global. Falls back to 8."""
+    """Return major ESLint version available in the repo/global. Defaults to 9 (flat-config era)."""
     try:
         result = subprocess.run(
             ["npx", "--no-install", "eslint", "--version"],
@@ -282,7 +282,9 @@ def _detect_eslint_version(repo_path: str) -> int:
         logger.debug("ESLint version detected: %d", major)
         return major
     except Exception:
-        return 8  # safe default
+        # No local ESLint found — npx will download the latest (v9+), so default
+        # to flat-config format so the generated config is compatible.
+        return 9
 
 
 def _run_eslint_with_fallback_config(
@@ -316,8 +318,10 @@ def _run_eslint_with_fallback_config(
 
     generated_config: str | None = None  # path to temp config if we created one
 
+    # Detect once — re-used for both config generation and command building
+    eslint_ver = _detect_eslint_version(repo_path)
+
     if not has_config:
-        eslint_ver = _detect_eslint_version(repo_path)
         if eslint_ver >= 9:
             # Flat config (v9+): write eslint.config.mjs
             config_path = os.path.join(repo_path, "eslint.config.mjs")
@@ -354,15 +358,22 @@ def _run_eslint_with_fallback_config(
             except Exception as exc:
                 errors.append(f"Could not write temporary ESLint config: {exc}")
 
-    # ── Determine which file extensions to lint ───────────
-    ext_args = (
-        ["--ext", ".ts,.tsx,.js,.jsx,.mjs,.cjs"]
-        if is_typescript
-        else ["--ext", ".js,.jsx,.mjs,.cjs"]
-    )
+    # ── Build the lint command ─────────────────────────────
+    # ESLint v9+ removed --ext; file patterns are passed as glob arguments.
+    # ESLint v8 uses --ext with a comma-separated list.
+    if eslint_ver >= 9:
+        # Pass explicit glob patterns — works with or without a files: field in config
+        if is_typescript:
+            file_args = ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.mjs", "**/*.cjs"]
+        else:
+            file_args = ["**/*.js", "**/*.jsx", "**/*.mjs", "**/*.cjs"]
+        cmd_base = ["npx", "eslint", "--format=json"] + file_args
+    else:
+        ext_str = ".ts,.tsx,.js,.jsx,.mjs,.cjs" if is_typescript else ".js,.jsx,.mjs,.cjs"
+        cmd_base = ["npx", "eslint", "--format=json", "--ext", ext_str, "."]
 
     try:
-        cmd = ["npx", "eslint", "--format=json"] + ext_args + ["."]
+        cmd = cmd_base
         result = subprocess.run(
             cmd,
             capture_output=True, text=True, timeout=120, cwd=repo_path,
