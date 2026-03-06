@@ -10,7 +10,6 @@ import {
   BarChart2,
   Settings,
   Zap,
-  Activity,
 } from "lucide-react";
 
 const NAV = [
@@ -27,13 +26,13 @@ export default function Sidebar() {
     <aside className="flex flex-col w-56 shrink-0 h-screen sticky top-0 bg-zinc-50 dark:bg-zinc-950 border-r border-zinc-200 dark:border-zinc-800/60">
       {/* Logo */}
       <div className="h-[57px] flex items-center gap-2.5 px-4 border-b border-zinc-200 dark:border-zinc-800/60">
-        <div className="w-7 h-7 rounded-lg bg-zinc-900 dark:bg-white flex items-center justify-center shrink-0 shadow-sm">
-          <Activity size={13} className="text-white dark:text-zinc-900" />
+        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-violet-600 to-violet-800 flex items-center justify-center shrink-0 shadow-sm shadow-violet-500/30">
+          <Zap size={13} className="text-white" />
         </div>
         <span className="font-semibold text-zinc-900 dark:text-white text-sm tracking-tight">
           CI Healer
         </span>
-        <span className="ml-auto text-[10px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 px-1.5 py-0.5 rounded">
+        <span className="ml-auto text-[10px] font-semibold text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-500/10 border border-violet-200 dark:border-violet-500/20 px-1.5 py-0.5 rounded">
           AI
         </span>
       </div>
@@ -54,7 +53,7 @@ export default function Sidebar() {
               className={[
                 "flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all duration-150",
                 active
-                  ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 font-medium shadow-sm"
+                  ? "bg-violet-600 text-white font-medium shadow-sm shadow-violet-500/20"
                   : "text-zinc-500 dark:text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800/60",
               ].join(" ")}
             >
@@ -65,15 +64,11 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Bottom — model badge */}
+      {/* Footer */}
       <div className="p-3 border-t border-zinc-200 dark:border-zinc-800/60">
-        <div className="flex items-center gap-1.5 px-2 py-2 rounded-lg bg-zinc-100 dark:bg-zinc-900/60">
-          <Zap size={11} className="text-violet-500" />
-          <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium">
-            Gemini 2.5 Flash
-          </span>
-          <span className="ml-auto w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-        </div>
+        <p className="text-[10px] text-zinc-400 dark:text-zinc-600 text-center">
+          AI-powered CI/CD healing
+        </p>
       </div>
     </aside>
   );
