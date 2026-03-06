@@ -17,6 +17,22 @@ from app.models.user import User
 from app.services.sse_service import broadcast, close_stream
 from config.settings import settings
 
+# Import keep-alive counter from main lazily to avoid circular imports
+def _track_run_start() -> None:
+    try:
+        from app.main import increment_active_runs
+        increment_active_runs()
+    except Exception:
+        pass
+
+
+def _track_run_end() -> None:
+    try:
+        from app.main import decrement_active_runs
+        decrement_active_runs()
+    except Exception:
+        pass
+
 logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -28,8 +44,7 @@ async def start_run(
     db: AsyncSession,
     user: User,
     repo_url: str,
-    team_name: str,
-    team_leader: str,
+    branch_prefix: str = "",
     max_iterations: int = 5,
     read_only: bool = False,
 ) -> str:
@@ -47,8 +62,8 @@ async def start_run(
         repo_url=repo_url,
         repo_owner=owner,
         repo_name=repo_name,
-        team_name=team_name,
-        team_leader=team_leader,
+        team_name=branch_prefix or "CI_HEALER",
+        team_leader="agent",
         mode="analyze-repository" if read_only else "run-agent",
         max_iterations=max_iterations,
         final_status="RUNNING",
@@ -67,8 +82,7 @@ async def start_run(
             db_run_id=db_run_id,
             user_github_token=user.github_access_token,
             repo_url=repo_url,
-            team_name=team_name,
-            team_leader=team_leader,
+            branch_prefix=branch_prefix,
             max_iterations=max_iterations,
             read_only=read_only,
         )
@@ -84,8 +98,7 @@ async def _run_agent_background(
     db_run_id: int,
     user_github_token: str,
     repo_url: str,
-    team_name: str,
-    team_leader: str,
+    branch_prefix: str,
     max_iterations: int,
     read_only: bool,
 ) -> None:
@@ -95,13 +108,13 @@ async def _run_agent_background(
     """
     from app.db.database import AsyncSessionLocal
 
+    _track_run_start()
     try:
         # ── Broadcast AGENT_STARTED ────────────────────────
         await broadcast(run_id, {
             "type": "AGENT_STARTED",
             "run_id": run_id,
             "repo_url": repo_url,
-            "team_name": team_name,
         })
         await broadcast(run_id, {
             "type": "log",
@@ -118,8 +131,7 @@ async def _run_agent_background(
             engine_result = await _call_engine(
                 run_id=run_id,
                 repo_url=repo_url,
-                team_name=team_name,
-                team_leader=team_leader,
+                branch_prefix=branch_prefix,
                 github_token=user_github_token,
                 max_iterations=max_iterations,
                 read_only=read_only,
@@ -182,14 +194,20 @@ async def _run_agent_background(
         # Mark run as failed in DB
         async with AsyncSessionLocal() as db:
             await _mark_run_failed(db, db_run_id)
-
     finally:
+        _track_run_end()
         await close_stream(run_id)
 
 
 async def _broadcast_semantic_events(run_id: str, engine_result: dict) -> None:
-    """Broadcast semantic SSE events based on engine result."""
-    # REPO_CLONED
+    """Broadcast semantic SSE events based on engine result.
+
+    NOTE: raw node-level log lines (language detection text, tool errors, etc.)
+    are already forwarded in real-time by _stream_engine_logs from the AI engine's
+    SSE stream.  Only send *structured* pipeline events here so the frontend
+    pipeline visualisation can track step state — don't duplicate plain log text.
+    """
+    # REPO_CLONED — structured event with branch / language metadata
     if engine_result.get("branch_name"):
         await broadcast(run_id, {
             "type": "REPO_CLONED",
@@ -197,25 +215,6 @@ async def _broadcast_semantic_events(run_id: str, engine_result: dict) -> None:
             "branch_name": engine_result.get("branch_name"),
             "primary_language": engine_result.get("primary_language"),
             "detected_languages": engine_result.get("detected_languages", []),
-        })
-
-    # Log primary language detection
-    primary_lang = engine_result.get("primary_language")
-    if primary_lang and primary_lang != "unknown":
-        await broadcast(run_id, {
-            "type": "log",
-            "level": "info",
-            "run_id": run_id,
-            "text": f"🌐 Detected language: {primary_lang}",
-        })
-
-    # Broadcast tool-level errors (missing linters, timeouts, etc.) as warnings
-    for err in engine_result.get("agent_errors", []):
-        await broadcast(run_id, {
-            "type": "log",
-            "level": "warn",
-            "run_id": run_id,
-            "text": f"⚠️  Tool error: {err}",
         })
 
     # TEST_DISCOVERED + TEST_FAILED
@@ -304,8 +303,7 @@ async def _stream_engine_logs(run_id: str) -> None:
 async def _call_engine(
     run_id: str,
     repo_url: str,
-    team_name: str,
-    team_leader: str,
+    branch_prefix: str,
     github_token: str,
     max_iterations: int,
     read_only: bool,
@@ -313,8 +311,7 @@ async def _call_engine(
     payload = {
         "run_id": run_id,          # correlates engine log store with SSE stream
         "repo_url": repo_url,
-        "team_name": team_name,
-        "team_leader": team_leader,
+        "branch_prefix": branch_prefix,
         "github_token": github_token,
         "max_iterations": max_iterations,
         "read_only": read_only,
@@ -426,11 +423,11 @@ async def _persist_result(
     run.final_score = score.get("final_score", 0)
     run.finished_at = datetime.now(timezone.utc)
     run.results_json = json.dumps({
-        "results_json":        engine_result.get("results_json") or {},
         "primary_language":    engine_result.get("primary_language"),
         "detected_languages":  engine_result.get("detected_languages", []),
         "agent_errors":        engine_result.get("agent_errors", []),
         "iterations_run":      engine_result.get("iterations_run", 0),
+        "skip_reason":         engine_result.get("skip_reason"),
     })
 
     # ── Persist fixes ─────────────────────────────────────
