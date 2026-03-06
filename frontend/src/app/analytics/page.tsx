@@ -8,16 +8,8 @@ import {
   XCircle,
   Wrench,
   GitBranch,
+  AlertCircle,
 } from "lucide-react";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  Cell,
-} from "recharts";
 
 import { getDashboardSummary, getAllHistory } from "@/lib/api";
 import type { DashboardSummary, RunSummary } from "@/types/agent";
@@ -58,16 +50,6 @@ export default function AnalyticsPage() {
   useEffect(() => {
     load();
   }, [load]);
-
-  // Chart data: last 20 runs by score (oldest first)
-  const chartData = runs
-    .slice(0, 20)
-    .reverse()
-    .map((r, i) => ({
-      name: `#${i + 1}`,
-      score: r.final_score ?? 0,
-      status: r.final_status,
-    }));
 
   const statCards: {
     label: string;
@@ -158,68 +140,6 @@ export default function AnalyticsPage() {
         ))}
       </div>
 
-      {/* Score trend chart */}
-      <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-white mb-4">
-          Score Trend
-          <span className="ml-2 text-xs font-normal text-zinc-400 dark:text-zinc-500">
-            last 20 runs
-          </span>
-        </h2>
-        {loading ? (
-          <div className="h-52 shimmer rounded-lg" />
-        ) : chartData.length === 0 ? (
-          <div className="h-52 flex items-center justify-center text-sm text-zinc-400 dark:text-zinc-600">
-            No data yet.
-          </div>
-        ) : (
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={chartData} barCategoryGap={6}>
-              <XAxis
-                dataKey="name"
-                tick={{ fontSize: 11, fill: "#71717a" }}
-                axisLine={false}
-                tickLine={false}
-              />
-              <YAxis
-                domain={[0, 110]}
-                tick={{ fontSize: 11, fill: "#71717a" }}
-                axisLine={false}
-                tickLine={false}
-                width={28}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "#18181b",
-                  border: "1px solid #3f3f46",
-                  borderRadius: 8,
-                  fontSize: 12,
-                  color: "#fff",
-                }}
-                cursor={{ fill: "rgba(255,255,255,0.04)" }}
-                formatter={(val: unknown) => [`${val ?? 0} pts`, "Score"]}
-              />
-              <Bar dataKey="score" radius={[4, 4, 0, 0]}>
-                {chartData.map((entry, i) => (
-                  <Cell
-                    key={i}
-                    fill={
-                      entry.status === "PASSED"
-                        ? "#10b981"
-                        : entry.status === "FAILED"
-                          ? "#ef4444"
-                          : entry.status === "NO_ISSUES"
-                            ? "#f59e0b"
-                            : "#71717a"
-                    }
-                  />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-
       {/* All runs list */}
       <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
@@ -259,11 +179,15 @@ export default function AnalyticsPage() {
                   />
                 ) : r.final_status === "FAILED" ? (
                   <XCircle size={14} className="text-red-500 shrink-0" />
-                ) : (
+                ) : r.final_status === "NO_ISSUES" ? (
+                  <CheckCircle2 size={14} className="text-amber-500 shrink-0" />
+                ) : r.final_status === "RUNNING" ? (
                   <RefreshCw
                     size={14}
-                    className="text-zinc-400 animate-spin shrink-0"
+                    className="text-violet-400 animate-spin shrink-0"
                   />
+                ) : (
+                  <AlertCircle size={14} className="text-zinc-400 shrink-0" />
                 )}
                 <div className="min-w-0 flex-1">
                   <p className="text-sm text-zinc-800 dark:text-zinc-200 font-medium truncate">
@@ -276,9 +200,13 @@ export default function AnalyticsPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-3 shrink-0 text-xs text-zinc-400 dark:text-zinc-500">
-                  <span className="hidden sm:block font-mono">
-                    {r.final_score ?? "—"} pts
-                  </span>
+                  {r.total_fixes_applied != null &&
+                    r.total_fixes_applied > 0 && (
+                      <span className="hidden sm:block text-emerald-500 font-medium">
+                        {r.total_fixes_applied} fix
+                        {r.total_fixes_applied !== 1 ? "es" : ""}
+                      </span>
+                    )}
                   <RunStatusBadge status={r.final_status} />
                 </div>
               </a>
